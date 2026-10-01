@@ -7,8 +7,8 @@ interface Ant {
   y: number
   targetX: number
   targetY: number
-  state: 'idle' | 'seeking' | 'carrying' | 'feeding_queen' | 'resting' | 'dead'
-  type: 'worker' | 'soldier' | 'queen'
+  state: 'idle' | 'seeking' | 'carrying' | 'feeding_queen' | 'resting' | 'dead' | 'flying' | 'mating'
+  type: 'worker' | 'soldier' | 'queen' | 'male' | 'female'
   energy: number
   age: number
   maxAge: number // 寿命上限（帧数）
@@ -16,6 +16,8 @@ interface Ant {
   frame: number
   carryingFood: boolean
   speed: number
+  hasWings?: boolean
+  isMated?: boolean // 雌蚁是否已交配
 }
 
 interface Egg {
@@ -23,16 +25,16 @@ interface Egg {
   x: number
   y: number
   hatchTimer: number // 孵化倒计时
-  type: 'worker' | 'soldier'
+  type: 'worker' | 'soldier' | 'male' | 'female'
 }
 
 interface Larva {
   id: number
   x: number
   y: number
-  type: 'worker' | 'soldier'
+  type: 'worker' | 'soldier' | 'male' | 'female'
   foodReceived: number
-  foodRequired: number // 工蚁5，兵蚁8
+  foodRequired: number // 工蚁5，兵蚁8，繁殖蚁3
   frame: number
 }
 
@@ -40,7 +42,7 @@ interface Cocoon {
   id: number
   x: number
   y: number
-  type: 'worker' | 'soldier'
+  type: 'worker' | 'soldier' | 'male' | 'female'
   hatchTimer: number // 孵化倒计时
 }
 
@@ -89,7 +91,7 @@ interface GameState {
   totalAnts: number
   day: number
   nestLevel: number
-  selectedTool: 'food_seed' | 'food_sugar' | 'food_insect' | 'water' | 'cricket' | 'none'
+  selectedTool: 'food_seed' | 'food_sugar' | 'food_insect' | 'water' | 'cricket' | 'catch' | 'none'
   message: string
   messageTimer: number
   queenHunger: number // 蚁后饥饿值 0-100
@@ -97,6 +99,9 @@ interface GameState {
   nextCricketId: number
   nextLarvaId: number
   nextCocoonId: number
+  currentScene: 'nest' | 'wild' // 当前场景
+  wildAnts: Ant[] // 野外的蚂蚁
+  wildQueens: Ant[] // 野外可捕捉的蚁后
 }
 
 // ============ 常量 ============
@@ -153,19 +158,23 @@ function drawPixelAnt(
   direction: number,
   frame: number,
   type: string,
-  carrying: boolean
+  carrying: boolean,
+  hasWings: boolean = false
 ) {
   const s = 2
   const colors: Record<string, { body: string; head: string; legs: string; accent: string }> = {
     worker: { body: '#5c3a1e', head: '#7a4e2a', legs: '#3d2510', accent: '#8B6914' },
     soldier: { body: '#8b2020', head: '#a53030', legs: '#6b1010', accent: '#ff4444' },
     queen: { body: '#8b7514', head: '#b8960a', legs: '#6b5510', accent: '#FFD700' },
+    male: { body: '#2c2c2c', head: '#3c3c3c', legs: '#1c1c1c', accent: '#4c4c4c' },
+    female: { body: '#4a2c5e', head: '#5a3c6e', legs: '#3a1c4e', accent: '#6a4c7e' },
   }
   const c = colors[type] || colors.worker
   const legAnim = Math.floor(frame / 6) % 2
   const isQueen = type === 'queen'
   const isSoldier = type === 'soldier'
-  const scale = isQueen ? 1.8 : 1
+  const isReproductive = type === 'male' || type === 'female'
+  const scale = isQueen ? 1.8 : isReproductive ? 1.2 : 1
   
   // 兵蚁头部更宽
   const headWidth = isSoldier ? 5 : 4
@@ -251,6 +260,18 @@ function drawPixelAnt(
   ctx.fillRect(s * 3.5, s * 1.5 + lOff, s, s * 2)
   ctx.fillRect(s * 3.5, -s * 2.5 - lOff, s, s * 2)
 
+  // 翅膀（繁殖蚁有翅膀）
+  if (hasWings) {
+    const wingAnim = Math.sin(frame * 0.3) * 2 // 翅膀扇动动画
+    ctx.fillStyle = 'rgba(200, 220, 255, 0.6)' // 半透明翅膀
+    // 上翅膀
+    ctx.fillRect(-s * 1, -s * 4 - wingAnim, s * 6, s * 2)
+    ctx.fillRect(s * 1, -s * 5 - wingAnim, s * 4, s * 2)
+    // 下翅膀
+    ctx.fillRect(-s * 1, s * 2 + wingAnim, s * 6, s * 2)
+    ctx.fillRect(s * 1, s * 3 + wingAnim, s * 4, s * 2)
+  }
+
   // 搬运食物（在头部前方）
   if (carrying) {
     ctx.fillStyle = '#8B4513'
@@ -286,7 +307,7 @@ function drawEgg(ctx: CanvasRenderingContext2D, x: number, y: number, hatchTimer
 }
 
 // 绘制幼虫
-function drawLarva(ctx: CanvasRenderingContext2D, x: number, y: number, frame: number, type: 'worker' | 'soldier', foodReceived: number, foodRequired: number) {
+function drawLarva(ctx: CanvasRenderingContext2D, x: number, y: number, frame: number, type: 'worker' | 'soldier' | 'male' | 'female', foodReceived: number, foodRequired: number) {
   const s = 2
   const wiggle = Math.sin(frame * 0.1) * 1
   
@@ -323,7 +344,7 @@ function drawLarva(ctx: CanvasRenderingContext2D, x: number, y: number, frame: n
 }
 
 // 绘制茧
-function drawCocoon(ctx: CanvasRenderingContext2D, x: number, y: number, type: 'worker' | 'soldier', hatchTimer: number) {
+function drawCocoon(ctx: CanvasRenderingContext2D, x: number, y: number, type: 'worker' | 'soldier' | 'male' | 'female', hatchTimer: number) {
   const s = 2
   const progress = 1 - hatchTimer / 600
   
@@ -450,6 +471,9 @@ function App() {
     nextCricketId: 1,
     nextLarvaId: 1,
     nextCocoonId: 1,
+    currentScene: 'nest',
+    wildAnts: [],
+    wildQueens: [],
   })
   const animFrameRef = useRef<number>(0)
   const tickRef = useRef<number>(0)
@@ -485,6 +509,9 @@ function App() {
     game.nextCricketId = 1
     game.nextLarvaId = 1
     game.nextCocoonId = 1
+    game.currentScene = 'nest'
+    game.wildAnts = []
+    game.wildQueens = []
 
     // 只创建蚁后（在巢穴区域内缓慢移动）
     game.ants.push({
@@ -502,6 +529,8 @@ function App() {
       frame: 0,
       carryingFood: false,
       speed: 0.5, // 蚁后移动速度（增加到0.5）
+      hasWings: false,
+      isMated: false,
     })
 
     game.totalAnts = game.ants.length
@@ -616,9 +645,11 @@ function App() {
   }, [zoom])
 
   // 生成新蚂蚁
-  const spawnAnt = useCallback((game: GameState, type: 'worker' | 'soldier', x: number, y: number) => {
+  const spawnAnt = useCallback((game: GameState, type: 'worker' | 'soldier' | 'male' | 'female', x: number, y: number) => {
     const id = game.nextAntId++
     const angle = Math.random() * Math.PI * 2
+    const isReproductive = type === 'male' || type === 'female'
+    
     const newAnt: Ant = {
       id,
       x: x + Math.cos(angle) * 10,
@@ -629,11 +660,17 @@ function App() {
       type,
       energy: 60,
       age: 0,
-      maxAge: type === 'worker' ? WORKER_MAX_AGE + Math.floor(Math.random() * 1200) : SOLDIER_MAX_AGE + Math.floor(Math.random() * 1200),
+      maxAge: type === 'worker' ? WORKER_MAX_AGE + Math.floor(Math.random() * 1200) : 
+              type === 'soldier' ? SOLDIER_MAX_AGE + Math.floor(Math.random() * 1200) :
+              3600, // 繁殖蚁寿命60秒
       direction: 1,
       frame: 0,
       carryingFood: false,
-      speed: type === 'worker' ? 0.7 + Math.random() * 0.5 : 0.5 + Math.random() * 0.3,
+      speed: type === 'worker' ? 0.7 + Math.random() * 0.5 : 
+             type === 'soldier' ? 0.5 + Math.random() * 0.3 :
+             1.2 + Math.random() * 0.5, // 繁殖蚁速度更快
+      hasWings: isReproductive,
+      isMated: false,
     }
     game.ants.push(newAnt)
     game.totalAnts = game.ants.filter(a => a.state !== 'dead').length
@@ -647,7 +684,7 @@ function App() {
         vy: (Math.random() - 0.5) * 3,
         life: 25,
         maxLife: 25,
-        color: '#FFD700',
+        color: isReproductive ? '#FF69B4' : '#FFD700',
       })
     }
   }, [])
@@ -868,10 +905,46 @@ function App() {
         // 蚁后吃完食物后检查是否可以产卵（每300帧才能产一次）
         if (closestFoodDist < 15 && tickRef.current % 300 === 0 && game.foodForQueen >= 1) {
           const workerCountForLay = game.ants.filter(a => a.type === 'worker' && a.state !== 'dead').length
+          const totalAntCount = game.ants.filter(a => a.state !== 'dead').length
           const canLaySoldierForQueen = workerCountForLay >= 18
+          const canLayReproductive = totalAntCount >= 50 // 50只蚂蚁后可以产繁殖蚁
           
-          // 先尝试产兵蚁（如果有足够工蚁且有2个食物）
-          if (canLaySoldierForQueen && game.foodForQueen >= 2 && Math.random() < 0.3) {
+          // 优先产繁殖蚁（如果有50只蚂蚁且有3个食物）
+          if (canLayReproductive && game.foodForQueen >= 3 && Math.random() < 0.2) {
+            game.foodForQueen -= 3
+            game.queenHunger = Math.max(0, game.queenHunger - 40)
+            
+            // 产繁殖蚁卵（雄蚁或雌蚁）
+            const reproductiveType = Math.random() < 0.5 ? 'male' : 'female'
+            const eggAngle = Math.random() * Math.PI * 2
+            const eggDist = 15 + Math.random() * 10
+            const newEgg: Egg = {
+              id: Date.now() + Math.random(),
+              x: queen.x + Math.cos(eggAngle) * eggDist,
+              y: queen.y + Math.sin(eggAngle) * eggDist,
+              hatchTimer: EGG_HATCH_TIME,
+              type: reproductiveType,
+            }
+            game.eggs.push(newEgg)
+            
+            // 产卵粒子
+            for (let i = 0; i < 8; i++) {
+              game.particles.push({
+                x: queen.x,
+                y: queen.y,
+                vx: (Math.random() - 0.5) * 3,
+                vy: (Math.random() - 0.5) * 3,
+                life: 30,
+                maxLife: 30,
+                color: '#FF69B4',
+              })
+            }
+            
+            game.message = `🥚 蚁后产下了一枚${reproductiveType === 'male' ? '雄蚁' : '雌蚁'}卵！(3食物→1卵)`
+            game.messageTimer = 150
+          }
+          // 尝试产兵蚁（如果有足够工蚁且有2个食物）
+          else if (canLaySoldierForQueen && game.foodForQueen >= 2 && Math.random() < 0.3) {
             game.foodForQueen -= 2
             game.queenHunger = Math.max(0, game.queenHunger - 30)
             
@@ -1000,6 +1073,123 @@ function App() {
       game.nestLevel++
       game.message = `🏰 蚁巢升级到 ${game.nestLevel} 级！`
       game.messageTimer = 200
+    }
+
+    // 繁殖蚁逻辑：孵化后飞向野外
+    game.ants.forEach(ant => {
+      if (ant.state === 'dead') return
+      if (ant.type !== 'male' && ant.type !== 'female') return
+      
+      // 繁殖蚁孵化后3秒开始飞向野外
+      if (ant.age > 180 && ant.state !== 'flying') {
+        ant.state = 'flying'
+        // 设置飞向野外的目标（远离巢穴）
+        const flyAngle = Math.random() * Math.PI * 2
+        const flyDist = 800 + Math.random() * 400
+        ant.targetX = NEST_CENTER_X * TILE_SIZE + Math.cos(flyAngle) * flyDist
+        ant.targetY = NEST_CENTER_Y * TILE_SIZE + Math.sin(flyAngle) * flyDist
+        game.message = `🪽 ${ant.type === 'male' ? '雄蚁' : '雌蚁'}开始飞向野外！`
+        game.messageTimer = 120
+      }
+      
+      // 飞行中的繁殖蚁
+      if (ant.state === 'flying') {
+        const dx = ant.targetX - ant.x
+        const dy = ant.targetY - ant.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        
+        if (dist > 5) {
+          ant.x += (dx / dist) * ant.speed * 2 // 飞行速度更快
+          ant.y += (dy / dist) * ant.speed * 2
+          // 更新方向
+          if (Math.abs(dx) > Math.abs(dy)) {
+            ant.direction = dx > 0 ? 1 : 3
+          } else {
+            ant.direction = dy > 0 ? 2 : 0
+          }
+        } else {
+          // 到达野外，转移到wildAnts
+          if (game.currentScene === 'nest') {
+            game.wildAnts.push({...ant})
+            ant.state = 'dead' // 从巢穴列表中移除
+          }
+        }
+      }
+    })
+    
+    // 野外繁殖蚁交配逻辑
+    if (game.wildAnts.length > 0) {
+      const wildMales = game.wildAnts.filter(a => a.type === 'male' && a.state === 'flying')
+      const wildFemales = game.wildAnts.filter(a => a.type === 'female' && a.state === 'flying' && !a.isMated)
+      
+      // 每60帧检查一次交配
+      if (tickRef.current % 60 === 0 && wildMales.length > 0 && wildFemales.length > 0) {
+        const male = wildMales[Math.floor(Math.random() * wildMales.length)]
+        const female = wildFemales[Math.floor(Math.random() * wildFemales.length)]
+        
+        // 检查距离
+        const dist = Math.sqrt((male.x - female.x) ** 2 + (male.y - female.y) ** 2)
+        if (dist < 50) {
+          // 交配成功
+          female.isMated = true
+          female.state = 'idle'
+          male.state = 'dead' // 雄蚁交配后死亡
+          
+          // 交配粒子
+          for (let i = 0; i < 10; i++) {
+            game.particles.push({
+              x: female.x,
+              y: female.y,
+              vx: (Math.random() - 0.5) * 4,
+              vy: (Math.random() - 0.5) * 4,
+              life: 30,
+              maxLife: 30,
+              color: '#FF1493',
+            })
+          }
+          
+          game.message = `💕 野外交配成功！雌蚁成为新蚁后`
+          game.messageTimer = 150
+          
+          // 交配后的雌蚁变成可捕捉的蚁后
+          game.wildQueens.push({
+            ...female,
+            type: 'queen',
+            hasWings: false,
+            speed: 0.3,
+          })
+          
+          // 从wildAnts中移除
+          game.wildAnts = game.wildAnts.filter(a => a.id !== female.id)
+        }
+      }
+    }
+    
+    // 野外随机刷新蚁后（每30秒有10%概率）
+    if (tickRef.current % 1800 === 0 && Math.random() < 0.1) {
+      const wildQueenX = NEST_CENTER_X * TILE_SIZE + (Math.random() - 0.5) * 1600
+      const wildQueenY = NEST_CENTER_Y * TILE_SIZE + (Math.random() - 0.5) * 1200
+      const newWildQueen: Ant = {
+        id: game.nextAntId++,
+        x: wildQueenX,
+        y: wildQueenY,
+        targetX: wildQueenX,
+        targetY: wildQueenY,
+        state: 'idle',
+        type: 'queen',
+        energy: 100,
+        age: 0,
+        maxAge: Infinity,
+        direction: 1,
+        frame: 0,
+        carryingFood: false,
+        speed: 0.3,
+        hasWings: false,
+        isMated: true,
+      }
+      game.wildQueens.push(newWildQueen)
+      game.message = `👑 野外发现了一只新蚁后！`
+      game.messageTimer = 150
     }
 
     // 更新蚂蚁AI
@@ -1270,9 +1460,16 @@ function App() {
 
     ctx.imageSmoothingEnabled = false
 
-    // 清屏 - 土壤背景
-    ctx.fillStyle = '#2d1b0e'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    // 根据场景绘制不同背景
+    if (game.currentScene === 'wild') {
+      // 野外场景 - 绿色草地背景
+      ctx.fillStyle = '#2d5016'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+    } else {
+      // 巢穴场景 - 土壤背景
+      ctx.fillStyle = '#2d1b0e'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+    }
 
     // 应用缩放
     ctx.save()
@@ -1282,18 +1479,37 @@ function App() {
     const viewW = canvas.width / z
     const viewH = canvas.height / z
 
-    // 绘制土壤纹理
-    for (let x = 0; x < viewW; x += 8) {
-      for (let y = 0; y < viewH; y += 8) {
-        const worldX = x + cam.x
-        const worldY = y + cam.y
-        const noise = Math.sin(worldX * 0.05) * Math.cos(worldY * 0.05)
-        if (noise > 0.3) {
-          ctx.fillStyle = '#3d2b1e'
-          ctx.fillRect(x, y, 4, 4)
-        } else if (noise < -0.3) {
-          ctx.fillStyle = '#1d0b00'
-          ctx.fillRect(x, y, 4, 4)
+    // 绘制背景纹理
+    if (game.currentScene === 'wild') {
+      // 野外草地纹理
+      for (let x = 0; x < viewW; x += 12) {
+        for (let y = 0; y < viewH; y += 12) {
+          const worldX = x + cam.x
+          const worldY = y + cam.y
+          const noise = Math.sin(worldX * 0.03) * Math.cos(worldY * 0.03)
+          if (noise > 0.2) {
+            ctx.fillStyle = '#3d6020'
+            ctx.fillRect(x, y, 6, 6)
+          } else if (noise < -0.2) {
+            ctx.fillStyle = '#1d4010'
+            ctx.fillRect(x, y, 6, 6)
+          }
+        }
+      }
+    } else {
+      // 巢穴土壤纹理
+      for (let x = 0; x < viewW; x += 8) {
+        for (let y = 0; y < viewH; y += 8) {
+          const worldX = x + cam.x
+          const worldY = y + cam.y
+          const noise = Math.sin(worldX * 0.05) * Math.cos(worldY * 0.05)
+          if (noise > 0.3) {
+            ctx.fillStyle = '#3d2b1e'
+            ctx.fillRect(x, y, 4, 4)
+          } else if (noise < -0.3) {
+            ctx.fillStyle = '#1d0b00'
+            ctx.fillRect(x, y, 4, 4)
+          }
         }
       }
     }
@@ -1410,7 +1626,7 @@ function App() {
       const ax = ant.x - cam.x
       const ay = ant.y - cam.y
       if (ax > -40 && ax < viewW + 40 && ay > -40 && ay < viewH + 40) {
-        drawPixelAnt(ctx, ax, ay, ant.direction, ant.frame, ant.type, ant.carryingFood)
+        drawPixelAnt(ctx, ax, ay, ant.direction, ant.frame, ant.type, ant.carryingFood, ant.hasWings)
         
         // 寿命指示条（仅非蚁后）
         if (ant.type !== 'queen') {
@@ -1426,6 +1642,33 @@ function App() {
         }
       }
     })
+
+    // 绘制野外蚂蚁和蚁后（只在野外场景显示）
+    if (game.currentScene === 'wild') {
+      // 绘制野外繁殖蚁
+      game.wildAnts.forEach((ant) => {
+        if (ant.state === 'dead') return
+        const ax = ant.x - cam.x
+        const ay = ant.y - cam.y
+        if (ax > -40 && ax < viewW + 40 && ay > -40 && ay < viewH + 40) {
+          drawPixelAnt(ctx, ax, ay, ant.direction, ant.frame, ant.type, false, ant.hasWings)
+        }
+      })
+      
+      // 绘制野外蚁后
+      game.wildQueens.forEach((ant) => {
+        const ax = ant.x - cam.x
+        const ay = ant.y - cam.y
+        if (ax > -40 && ax < viewW + 40 && ay > -40 && ay < viewH + 40) {
+          drawPixelAnt(ctx, ax, ay, ant.direction, ant.frame, ant.type, false, false)
+          
+          // 可捕捉标记
+          ctx.fillStyle = '#FFD700'
+          ctx.font = '16px Arial'
+          ctx.fillText('👑', ax - 8, ay - 20)
+        }
+      })
+    }
 
     // 绘制粒子
     game.particles.forEach((p) => {
@@ -1689,6 +1932,50 @@ function App() {
       })
       game.message = '💧 浇水成功！附近蚂蚁恢复了体力'
       game.messageTimer = 100
+    } else if (game.selectedTool === 'catch') {
+      // 捕捉野外蚁后
+      if (game.currentScene !== 'wild') {
+        game.message = '⚠️ 只能在野外场景捕捉蚁后！'
+        game.messageTimer = 100
+      } else {
+        let caught = false
+        game.wildQueens = game.wildQueens.filter(queen => {
+          const dist = Math.sqrt((queen.x - clickX) ** 2 + (queen.y - clickY) ** 2)
+          if (dist < 30 && !caught) {
+            // 捕捉成功
+            caught = true
+            // 将蚁后带回巢穴
+            game.ants.push({
+              ...queen,
+              x: NEST_CENTER_X * TILE_SIZE,
+              y: NEST_CENTER_Y * TILE_SIZE,
+              targetX: NEST_CENTER_X * TILE_SIZE,
+              targetY: NEST_CENTER_Y * TILE_SIZE,
+            })
+            // 捕捉粒子
+            for (let i = 0; i < 12; i++) {
+              game.particles.push({
+                x: queen.x,
+                y: queen.y,
+                vx: (Math.random() - 0.5) * 5,
+                vy: (Math.random() - 0.5) * 5,
+                life: 30,
+                maxLife: 30,
+                color: '#FFD700',
+              })
+            }
+            game.message = '🎉 成功捕捉了一只蚁后！'
+            game.messageTimer = 150
+            return false // 从wildQueens中移除
+          }
+          return true
+        })
+        
+        if (!caught) {
+          game.message = '❌ 没有捕捉到蚁后，再试试！'
+          game.messageTimer = 100
+        }
+      }
     }
 
     forceUpdate((v) => v + 1)
@@ -1751,12 +2038,28 @@ function App() {
             👑 蚁后饥饿: {Math.floor(game.queenHunger)}%
           </span>
         </div>
-        <button
-          onClick={() => setShowHelp(!showHelp)}
-          className="px-3 py-1 bg-[#4a3520] text-[#daa520] border border-[#6b4423] hover:bg-[#5c4033] text-sm"
-        >
-          ? 帮助
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => {
+              game.currentScene = game.currentScene === 'nest' ? 'wild' : 'nest'
+              setCamera({
+                x: NEST_CENTER_X * TILE_SIZE - 400,
+                y: NEST_CENTER_Y * TILE_SIZE - 300,
+              })
+              setZoom(1)
+              forceUpdate(v => v + 1)
+            }}
+            className="px-3 py-1 bg-[#4a3520] text-[#daa520] border border-[#6b4423] hover:bg-[#5c4033] text-sm"
+          >
+            {game.currentScene === 'nest' ? '🌿 野外' : '🏠 巢穴'}
+          </button>
+          <button
+            onClick={() => setShowHelp(!showHelp)}
+            className="px-3 py-1 bg-[#4a3520] text-[#daa520] border border-[#6b4423] hover:bg-[#5c4033] text-sm"
+          >
+            ? 帮助
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -1772,6 +2075,7 @@ function App() {
             { tool: 'food_insect' as const, icon: '🦗', name: '昆虫', desc: '食物量+15' },
             { tool: 'cricket' as const, icon: '🦟', name: '蟋蟀', desc: '兵蚁会攻击' },
             { tool: 'water' as const, icon: '💧', name: '浇水', desc: '恢复体力' },
+            { tool: 'catch' as const, icon: '🪤', name: '捕捉', desc: '捕捉野外蚁后' },
           ].map(({ tool, icon, name, desc }) => (
             <button
               key={tool}
@@ -1983,6 +2287,19 @@ function App() {
                 <p>• 兵蚁会自动寻找并攻击蟋蟀</p>
                 <p>• 蟋蟀被击杀后 <strong className="text-[#90EE90]">掉落食物</strong></p>
                 <p>• 蟋蟀会随机跳跃移动</p>
+                <hr className="border-[#4a3520]" />
+                <p>🪽 <strong className="text-[#daa520]">繁殖系统：</strong></p>
+                <p>• 蚁群达到 <strong className="text-[#FF69B4]">50只</strong> 后可产繁殖蚁卵（3食物）</p>
+                <p>• 繁殖蚁分为 <strong className="text-[#2c2c2c]">雄蚁</strong> 和 <strong className="text-[#4a2c5e]">雌蚁</strong>，带翅膀</p>
+                <p>• 繁殖蚁孵化后会 <strong className="text-[#87CEEB]">飞向野外</strong></p>
+                <p>• 在野外交配后，雌蚁成为 <strong className="text-[#FFD700]">新蚁后</strong></p>
+                <hr className="border-[#4a3520]" />
+                <p>🌿 <strong className="text-[#daa520]">野外场景：</strong></p>
+                <p>• 点击顶部 <strong className="text-[#87CEEB]">🌿野外</strong> 按钮切换到野外</p>
+                <p>• 野外有繁殖蚁和可捕捉的蚁后</p>
+                <p>• 使用 <strong className="text-[#FFD700]">🪤捕捉</strong> 工具捕捉野外蚁后</p>
+                <p>• 野外每30秒有 <strong>10%</strong> 概率刷新新蚁后</p>
+                <p>• 捕捉的蚁后会带回巢穴，可以产卵</p>
                 <hr className="border-[#4a3520]" />
                 <p>⏳ <strong className="text-[#daa520]">寿命系统：</strong></p>
                 <p>• 工蚁寿命约 <strong>90秒</strong>（头顶有寿命条）</p>
