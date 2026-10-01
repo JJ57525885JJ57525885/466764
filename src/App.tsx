@@ -478,7 +478,7 @@ function App() {
     game.foodForQueen = 0
     game.day = 1
     game.nestLevel = 1
-    game.message = '🐜 欢迎来到蚂蚁世界！点击蚁后巢穴放置食物开始游戏~'
+    game.message = '🐜 欢迎来到蚂蚁世界！点击蚁后附近放置食物，蚁后会自己吃~'
     game.messageTimer = 300
     game.queenHunger = 50
     game.nextAntId = 1
@@ -799,29 +799,80 @@ function App() {
       queen.frame++
       queen.age++
 
-      // 蚁后在巢穴区域内缓慢移动
-      const queenDx = queen.targetX - queen.x
-      const queenDy = queen.targetY - queen.y
-      const queenDist = Math.sqrt(queenDx * queenDx + queenDy * queenDy)
+      // 检查蚁后附近是否有食物（蚁后会自己吃）
+      const eatRadius = 40 // 蚁后吃食物的范围
+      let closestFood: Food | null = null
+      let closestFoodDist = Infinity
       
-      // 如果到达目标或离目标很近，选择新目标
-      if (queenDist < 5 || Math.random() < 0.005) {
-        // 在巢穴半径内随机选择新位置
-        const angle = Math.random() * Math.PI * 2
-        const radius = Math.random() * (NEST_RADIUS * TILE_SIZE * 0.6) // 只在巢穴60%范围内移动
-        queen.targetX = NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * radius
-        queen.targetY = NEST_CENTER_Y * TILE_SIZE + Math.sin(angle) * radius
-      }
+      game.foods.forEach(food => {
+        const foodX = food.x * TILE_SIZE
+        const foodY = food.y * TILE_SIZE
+        const dist = Math.sqrt((foodX - queen.x) ** 2 + (foodY - queen.y) ** 2)
+        if (dist < eatRadius && dist < closestFoodDist) {
+          closestFoodDist = dist
+          closestFood = food
+        }
+      })
       
-      // 向目标移动（很慢）
-      if (queenDist > 1) {
-        queen.x += (queenDx / queenDist) * queen.speed
-        queen.y += (queenDy / queenDist) * queen.speed
-        // 更新方向
-        if (Math.abs(queenDx) > Math.abs(queenDy)) {
-          queen.direction = queenDx > 0 ? 1 : 3
+      // 如果附近有食物，蚁后会去吃
+      if (closestFood) {
+        const targetFood = closestFood as Food
+        const foodX = targetFood.x * TILE_SIZE
+        const foodY = targetFood.y * TILE_SIZE
+        
+        // 如果离食物很近，吃掉它
+        if (closestFoodDist < 15) {
+          targetFood.amount--
+          game.foodForQueen++
+          
+          // 吃掉食物的粒子效果
+          game.particles.push({
+            x: queen.x,
+            y: queen.y,
+            vx: 0,
+            vy: -1,
+            life: 20,
+            maxLife: 20,
+            color: '#90EE90',
+          })
+          
+          // 如果食物吃完，移除
+          if (targetFood.amount <= 0) {
+            game.foods = game.foods.filter(f => f.id !== targetFood.id)
+          }
+          
+          game.message = `👑 蚁后吃了食物！储备: ${game.foodForQueen}`
+          game.messageTimer = 80
         } else {
-          queen.direction = queenDy > 0 ? 2 : 0
+          // 向食物移动
+          queen.targetX = foodX
+          queen.targetY = foodY
+        }
+      } else {
+        // 没有食物时，在巢穴区域内缓慢移动
+        const queenDx = queen.targetX - queen.x
+        const queenDy = queen.targetY - queen.y
+        const queenDist = Math.sqrt(queenDx * queenDx + queenDy * queenDy)
+        
+        // 如果到达目标或离目标很近，选择新目标
+        if (queenDist < 5 || Math.random() < 0.005) {
+          // 在巢穴半径内随机选择新位置
+          const angle = Math.random() * Math.PI * 2
+          const radius = Math.random() * (NEST_RADIUS * TILE_SIZE * 0.6) // 只在巢穴60%范围内移动
+          queen.targetX = NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * radius
+          queen.targetY = NEST_CENTER_Y * TILE_SIZE + Math.sin(angle) * radius
+        }
+        
+        // 向目标移动（很慢）
+        if (queenDist > 1) {
+          queen.x += (queenDx / queenDist) * queen.speed
+          queen.y += (queenDy / queenDist) * queen.speed
+          // 更新方向
+          if (Math.abs(queenDx) > Math.abs(queenDy)) {
+            queen.direction = queenDx > 0 ? 1 : 3
+          } else {
+            queen.direction = queenDy > 0 ? 2 : 0
+          }
         }
       }
 
