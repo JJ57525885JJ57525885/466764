@@ -69,7 +69,7 @@ const NEST_RADIUS = 25
 const WORKER_MAX_AGE = 5400 // 工蚁寿命约90秒（60fps）
 const SOLDIER_MAX_AGE = 7200 // 兵蚁寿命约120秒
 const EGG_HATCH_TIME = 600 // 卵孵化时间10秒
-const FOOD_PER_EGG = 2 // 2个食物产1个卵
+const FOOD_PER_EGG = 5 // 5个食物产1个卵
 const CAMERA_SPEED = 8 // 键盘/边缘滚动速度
 const MIN_ZOOM = 0.5
 const MAX_ZOOM = 3
@@ -126,7 +126,7 @@ function drawPixelAnt(
   const c = colors[type] || colors.worker
   const legAnim = Math.floor(frame / 6) % 2
   const isQueen = type === 'queen'
-  const scale = isQueen ? 1.5 : 1
+  const scale = isQueen ? 1.8 : 1
 
   ctx.save()
   ctx.translate(Math.floor(x), Math.floor(y))
@@ -139,75 +139,80 @@ function drawPixelAnt(
   else if (direction === 3) ctx.scale(-1, 1)          // 朝左：水平翻转
   // direction === 1 朝右：不做任何变换
 
-  // === 横向蚂蚁绘制（头在左，腹部在右）===
+  // === 横向蚂蚁绘制（头在左，腹部在右，身体水平）===
   
-  // 触角（从头部伸出）
+  // 触角（从头部前方伸出，水平方向）
   ctx.fillStyle = c.head
-  ctx.fillRect(-s * 5, -s * 3, s, s * 2)
-  ctx.fillRect(-s * 5, s * 1, s, s * 2)
-  ctx.fillRect(-s * 6, -s * 4, s, s)
-  ctx.fillRect(-s * 6, s * 3, s, s)
+  ctx.fillRect(-s * 6, -s * 2, s * 2, s)  // 上触角
+  ctx.fillRect(-s * 6, s * 1, s * 2, s)   // 下触角
+  ctx.fillRect(-s * 7, -s * 3, s, s)      // 触角尖端
+  ctx.fillRect(-s * 7, s * 2, s, s)       // 触角尖端
 
-  // 头部（圆形像素）
+  // 头部（横向椭圆：宽>高）
   ctx.fillStyle = c.head
-  ctx.fillRect(-s * 4, -s * 2, s * 3, s * 4)
-  ctx.fillRect(-s * 3, -s * 3, s * 2, s * 6)
-  // 眼睛
+  ctx.fillRect(-s * 4, -s * 1.5, s * 4, s * 3)  // 头部主体（横向）
+  ctx.fillRect(-s * 5, -s, s * 2, s * 2)         // 头部前端
+  
+  // 眼睛（在头部两侧）
   ctx.fillStyle = '#fff'
-  ctx.fillRect(-s * 4, -s * 1, s, s)
-  ctx.fillRect(-s * 4, s * 1, s, s)
+  ctx.fillRect(-s * 4, -s * 1.5, s, s)  // 上眼
+  ctx.fillRect(-s * 4, s * 0.5, s, s)   // 下眼
   ctx.fillStyle = '#000'
-  ctx.fillRect(-s * 4, -s * 1, 1, 1)
-  ctx.fillRect(-s * 4, s * 1, 1, 1)
-  // 大颚
+  ctx.fillRect(-s * 4, -s * 1, 1, 1)    // 瞳孔
+  ctx.fillRect(-s * 4, s * 0.5, 1, 1)   // 瞳孔
+  
+  // 大颚（头部最前方）
   ctx.fillStyle = c.head
-  ctx.fillRect(-s * 5, -s, s, s)
-  ctx.fillRect(-s * 5, 0, s, s)
+  ctx.fillRect(-s * 5.5, -s * 0.5, s, s * 0.5)
+  ctx.fillRect(-s * 5.5, 0, s, s * 0.5)
 
-  // 胸部（连接头腹）
+  // 胸部（横向连接）
   ctx.fillStyle = c.body
-  ctx.fillRect(-s * 1, -s * 1.5, s * 3, s * 3)
+  ctx.fillRect(-s * 0.5, -s * 1, s * 3, s * 2)
 
   // 腰部（细连接）
   ctx.fillStyle = c.body
-  ctx.fillRect(s * 2, -s, s * 1.5, s * 2)
+  ctx.fillRect(s * 2.5, -s * 0.5, s * 1.5, s)
 
-  // 腹部（大的椭圆）
+  // 腹部（横向椭圆，蚁后更大更长）
   ctx.fillStyle = c.body
   if (isQueen) {
-    // 蚁后腹部更大
-    ctx.fillRect(s * 3, -s * 3, s * 6, s * 6)
-    ctx.fillRect(s * 4, -s * 4, s * 4, s * 8)
+    // 蚁后腹部：更宽更长
+    ctx.fillRect(s * 4, -s * 2.5, s * 8, s * 5)    // 腹部主体（横向长）
+    ctx.fillRect(s * 5, -s * 3, s * 6, s * 6)      // 腹部加宽
+    ctx.fillRect(s * 10, -s * 2, s * 2, s * 4)     // 腹部末端
     // 腹部花纹
     ctx.fillStyle = c.accent
-    ctx.fillRect(s * 5, -s * 2, s * 2, s * 4)
-    ctx.fillRect(s * 4, -s, s, s * 2)
+    ctx.fillRect(s * 6, -s * 1.5, s * 2, s * 3)
+    ctx.fillRect(s * 9, -s * 1, s * 1.5, s * 2)
   } else {
-    ctx.fillRect(s * 3, -s * 2, s * 4, s * 4)
-    ctx.fillRect(s * 4, -s * 2.5, s * 2, s * 5)
+    // 普通蚂蚁腹部
+    ctx.fillRect(s * 4, -s * 1.5, s * 5, s * 3)    // 腹部主体
+    ctx.fillRect(s * 5, -s * 2, s * 3, s * 4)      // 腹部加宽
     // 腹部花纹
     ctx.fillStyle = c.accent
-    ctx.fillRect(s * 4, -s, s * 2, s * 2)
+    ctx.fillRect(s * 5.5, -s * 0.5, s * 2, s)
   }
 
-  // 腿（3对，上下各3条）
+  // 腿（3对，在身体下方，水平排列）
   ctx.fillStyle = c.legs
   const lOff = legAnim * s
-  // 下方腿
-  ctx.fillRect(-s * 1, s * 2 + lOff, s, s * 2)
-  ctx.fillRect(s * 1, s * 2 - lOff, s, s * 2)
-  ctx.fillRect(s * 3, s * 2 + lOff, s, s * 2)
-  // 上方腿
-  ctx.fillRect(-s * 1, -s * 3 - lOff, s, s * 2)
-  ctx.fillRect(s * 1, -s * 3 + lOff, s, s * 2)
-  ctx.fillRect(s * 3, -s * 3 - lOff, s, s * 2)
+  // 前腿
+  ctx.fillRect(-s * 0.5, s * 1.5 + lOff, s, s * 2)
+  ctx.fillRect(-s * 0.5, -s * 2.5 - lOff, s, s * 2)
+  // 中腿
+  ctx.fillRect(s * 1.5, s * 1.5 - lOff, s, s * 2)
+  ctx.fillRect(s * 1.5, -s * 2.5 + lOff, s, s * 2)
+  // 后腿
+  ctx.fillRect(s * 3.5, s * 1.5 + lOff, s, s * 2)
+  ctx.fillRect(s * 3.5, -s * 2.5 - lOff, s, s * 2)
 
   // 搬运食物（在头部前方）
   if (carrying) {
     ctx.fillStyle = '#8B4513'
-    ctx.fillRect(-s * 7, -s * 2, s * 2, s * 3)
+    ctx.fillRect(-s * 7, -s * 1.5, s * 2, s * 2)
     ctx.fillStyle = '#A0522D'
-    ctx.fillRect(-s * 7, -s * 2, s * 2, s)
+    ctx.fillRect(-s * 7, -s * 1.5, s * 2, s)
   }
 
   ctx.restore()
