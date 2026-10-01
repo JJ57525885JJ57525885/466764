@@ -461,7 +461,7 @@ function App() {
   const [showHelp, setShowHelp] = useState(false)
   const [showMinimap, setShowMinimap] = useState(true)
   const keysPressed = useRef<Set<string>>(new Set())
-  const mousePosition = useRef({ x: 0, y: 0 })
+  const mousePosition = useRef({ x: -1000, y: -1000 }) // 初始值设为画布外，避免触发边缘滚动
   const touchStartRef = useRef<{ x: number; y: number; dist: number } | null>(null)
 
   // 初始化游戏
@@ -1093,81 +1093,10 @@ function App() {
                 color: '#90EE90',
               })
             }
-
-            // 检查蚁后是否可以产卵
-            // 工蚁卵需要1个食物，兵蚁卵需要2个食物
-            // 需要至少18只工蚁才能产兵蚁
-            const workerCount = game.ants.filter(a => a.type === 'worker' && a.state !== 'dead').length
-            const canLaySoldier = workerCount >= 18
             
-            if (queen) {
-              // 先尝试产兵蚁（如果有足够工蚁且有2个食物）
-              if (canLaySoldier && game.foodForQueen >= 2 && Math.random() < 0.3) {
-                game.foodForQueen -= 2
-                game.queenHunger = Math.max(0, game.queenHunger - 30)
-                
-                // 产兵蚁卵
-                const eggAngle = Math.random() * Math.PI * 2
-                const eggDist = 15 + Math.random() * 10
-                const newEgg: Egg = {
-                  id: Date.now() + Math.random(),
-                  x: queen.x + Math.cos(eggAngle) * eggDist,
-                  y: queen.y + Math.sin(eggAngle) * eggDist,
-                  hatchTimer: EGG_HATCH_TIME,
-                  type: 'soldier',
-                }
-                game.eggs.push(newEgg)
-                
-                // 产卵粒子
-                for (let i = 0; i < 8; i++) {
-                  game.particles.push({
-                    x: queen.x,
-                    y: queen.y,
-                    vx: (Math.random() - 0.5) * 3,
-                    vy: (Math.random() - 0.5) * 3,
-                    life: 30,
-                    maxLife: 30,
-                    color: '#ff4444',
-                  })
-                }
-                
-                game.message = `🥚 蚁后产下了一枚兵蚁卵！(2食物→1卵)`
-                game.messageTimer = 150
-              }
-              // 产工蚁卵（需要1个食物）
-              else if (game.foodForQueen >= 1) {
-                game.foodForQueen -= 1
-                game.queenHunger = Math.max(0, game.queenHunger - 20)
-                
-                // 产工蚁卵
-                const eggAngle = Math.random() * Math.PI * 2
-                const eggDist = 15 + Math.random() * 10
-                const newEgg: Egg = {
-                  id: Date.now() + Math.random(),
-                  x: queen.x + Math.cos(eggAngle) * eggDist,
-                  y: queen.y + Math.sin(eggAngle) * eggDist,
-                  hatchTimer: EGG_HATCH_TIME,
-                  type: 'worker',
-                }
-                game.eggs.push(newEgg)
-                
-                // 产卵粒子
-                for (let i = 0; i < 8; i++) {
-                  game.particles.push({
-                    x: queen.x,
-                    y: queen.y,
-                    vx: (Math.random() - 0.5) * 3,
-                    vy: (Math.random() - 0.5) * 3,
-                    life: 30,
-                    maxLife: 30,
-                    color: '#FFD700',
-                  })
-                }
-                
-                game.message = `🥚 蚁后产下了一枚工蚁卵！(1食物→1卵)`
-                game.messageTimer = 150
-              }
-            }
+            // 工蚁只负责搬运食物，产卵由蚁后自己吃食物时触发
+            game.message = `🍖 工蚁搬运了食物回巢！储备: ${game.foodForQueen}`
+            game.messageTimer = 60
           }
         } else {
           // 工蚁寻找食物
@@ -1604,7 +1533,14 @@ function App() {
     const handleMouseMove = (e: MouseEvent) => {
       mousePosition.current = { x: e.clientX, y: e.clientY }
     }
+    
+    // 鼠标离开窗口时重置位置
+    const handleMouseLeave = () => {
+      mousePosition.current = { x: -1000, y: -1000 }
+    }
+    
     window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseleave', handleMouseLeave)
     
     const scrollInterval = setInterval(() => {
       const keys = keysPressed.current
@@ -1617,18 +1553,35 @@ function App() {
       if (keys.has('a') || keys.has('arrowleft')) dx -= CAMERA_SPEED
       if (keys.has('d') || keys.has('arrowright')) dx += CAMERA_SPEED
       
-      // 边缘滚动
+      // 边缘滚动（只在鼠标真正在画布内时触发）
       const canvas = canvasRef.current
       if (canvas) {
         const rect = canvas.getBoundingClientRect()
         const mx = mousePosition.current.x
         const my = mousePosition.current.y
         
-        if (mx >= rect.left && mx <= rect.right && my >= rect.top && my <= rect.bottom) {
-          if (mx - rect.left < EDGE_SCROLL_THRESHOLD) dx -= CAMERA_SPEED
-          if (rect.right - mx < EDGE_SCROLL_THRESHOLD) dx += CAMERA_SPEED
-          if (my - rect.top < EDGE_SCROLL_THRESHOLD) dy -= CAMERA_SPEED
-          if (rect.bottom - my < EDGE_SCROLL_THRESHOLD) dy += CAMERA_SPEED
+        // 严格检查鼠标是否在画布内
+        const isInCanvas = mx >= rect.left && mx <= rect.right && my >= rect.top && my <= rect.bottom
+        
+        if (isInCanvas) {
+          const distToLeft = mx - rect.left
+          const distToRight = rect.right - mx
+          const distToTop = my - rect.top
+          const distToBottom = rect.bottom - my
+          
+          // 只有当鼠标在边缘阈值内时才触发滚动
+          if (distToLeft < EDGE_SCROLL_THRESHOLD && distToLeft >= 0) {
+            dx -= CAMERA_SPEED * (1 - distToLeft / EDGE_SCROLL_THRESHOLD)
+          }
+          if (distToRight < EDGE_SCROLL_THRESHOLD && distToRight >= 0) {
+            dx += CAMERA_SPEED * (1 - distToRight / EDGE_SCROLL_THRESHOLD)
+          }
+          if (distToTop < EDGE_SCROLL_THRESHOLD && distToTop >= 0) {
+            dy -= CAMERA_SPEED * (1 - distToTop / EDGE_SCROLL_THRESHOLD)
+          }
+          if (distToBottom < EDGE_SCROLL_THRESHOLD && distToBottom >= 0) {
+            dy += CAMERA_SPEED * (1 - distToBottom / EDGE_SCROLL_THRESHOLD)
+          }
         }
       }
       
@@ -1639,6 +1592,7 @@ function App() {
     
     return () => {
       window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseleave', handleMouseLeave)
       clearInterval(scrollInterval)
     }
   }, [zoom])
@@ -1760,6 +1714,15 @@ function App() {
   const handleMouseUp = () => {
     setIsDragging(false)
   }
+  
+  // 全局鼠标释放，防止拖拽卡住
+  useEffect(() => {
+    const handleGlobalMouseUp = () => {
+      setIsDragging(false)
+    }
+    window.addEventListener('mouseup', handleGlobalMouseUp)
+    return () => window.removeEventListener('mouseup', handleGlobalMouseUp)
+  }, [])
 
   const game = gameRef.current
   const aliveAnts = game.ants.filter(a => a.state !== 'dead')
