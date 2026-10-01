@@ -150,8 +150,8 @@ function drawPixelAnt(
 
   // 根据方向旋转 - 蚂蚁默认头朝左
   // direction: 0=上, 1=右, 2=下, 3=左
-  if (direction === 0) ctx.rotate(-Math.PI / 2)      // 朝上：逆时针90度
-  else if (direction === 2) ctx.rotate(Math.PI / 2)   // 朝下：顺时针90度
+  if (direction === 0) ctx.rotate(Math.PI / 2)        // 朝上：顺时针90度（头从左转到上）
+  else if (direction === 2) ctx.rotate(-Math.PI / 2)  // 朝下：逆时针90度（头从左转到下）
   else if (direction === 1) ctx.scale(-1, 1)          // 朝右：翻转使头朝右（朝前）
   // direction === 3 朝左：不翻转，头默认朝左（朝前）
 
@@ -384,7 +384,7 @@ function App() {
     game.nextAntId = 1
     game.nextCricketId = 1
 
-    // 创建蚁后（固定在巢中心，不会移动）
+    // 创建蚁后（在巢穴区域内缓慢移动）
     game.ants.push({
       id: 0,
       x: NEST_CENTER_X * TILE_SIZE,
@@ -399,7 +399,7 @@ function App() {
       direction: 1, // 朝右
       frame: 0,
       carryingFood: false,
-      speed: 0,
+      speed: 0.2, // 蚁后移动很慢
     })
 
     // 创建初始工蚁
@@ -673,13 +673,34 @@ function App() {
     // 蚁后产卵逻辑
     const queen = game.ants.find(a => a.type === 'queen' && a.state !== 'dead')
     if (queen) {
-      // 蚁后固定在巢中心不动
-      queen.x = NEST_CENTER_X * TILE_SIZE
-      queen.y = NEST_CENTER_Y * TILE_SIZE
-      queen.targetX = queen.x
-      queen.targetY = queen.y
       queen.frame++
       queen.age++
+
+      // 蚁后在巢穴区域内缓慢移动
+      const queenDx = queen.targetX - queen.x
+      const queenDy = queen.targetY - queen.y
+      const queenDist = Math.sqrt(queenDx * queenDx + queenDy * queenDy)
+      
+      // 如果到达目标或离目标很近，选择新目标
+      if (queenDist < 5 || Math.random() < 0.005) {
+        // 在巢穴半径内随机选择新位置
+        const angle = Math.random() * Math.PI * 2
+        const radius = Math.random() * (NEST_RADIUS * TILE_SIZE * 0.6) // 只在巢穴60%范围内移动
+        queen.targetX = NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * radius
+        queen.targetY = NEST_CENTER_Y * TILE_SIZE + Math.sin(angle) * radius
+      }
+      
+      // 向目标移动（很慢）
+      if (queenDist > 1) {
+        queen.x += (queenDx / queenDist) * queen.speed
+        queen.y += (queenDy / queenDist) * queen.speed
+        // 更新方向
+        if (Math.abs(queenDx) > Math.abs(queenDy)) {
+          queen.direction = queenDx > 0 ? 1 : 3
+        } else {
+          queen.direction = queenDy > 0 ? 2 : 0
+        }
+      }
 
       // 蚁后饥饿度自然增加
       if (tickRef.current % 300 === 0) {
@@ -1600,7 +1621,7 @@ function App() {
                 <p>4. 卵经过一段时间后孵化为新蚂蚁</p>
                 <hr className="border-[#4a3520]" />
                 <p>👑 <strong className="text-[#daa520]">蚁后：</strong></p>
-                <p>• 固定在巢中心，<strong>无法移动</strong></p>
+                <p>• 在巢穴区域内<strong>缓慢移动</strong></p>
                 <p>• 接受工蚁送来的食物后产卵</p>
                 <p>• 寿命 <strong className="text-[#FFD700]">无限</strong>（永生）</p>
                 <p>• 注意饥饿度！太高会影响产卵</p>
