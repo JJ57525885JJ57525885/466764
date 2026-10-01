@@ -501,7 +501,7 @@ function App() {
       direction: 1, // 朝右
       frame: 0,
       carryingFood: false,
-      speed: 0.2, // 蚁后移动很慢
+      speed: 0.5, // 蚁后移动速度（增加到0.5）
     })
 
     game.totalAnts = game.ants.length
@@ -800,7 +800,7 @@ function App() {
       queen.age++
 
       // 检查蚁后附近是否有食物（蚁后会自己吃）
-      const eatRadius = 40 // 蚁后吃食物的范围
+      const eatRadius = 80 // 蚁后检测食物的范围（增加到80像素）
       let closestFood: Food | null = null
       let closestFoodDist = Infinity
       
@@ -819,6 +819,12 @@ function App() {
         const targetFood = closestFood as Food
         const foodX = targetFood.x * TILE_SIZE
         const foodY = targetFood.y * TILE_SIZE
+        
+        // 显示蚁后检测到食物的消息（只在第一次检测到时显示）
+        if (closestFoodDist > 15 && tickRef.current % 120 === 0) {
+          game.message = `👑 蚁后发现食物，正在移动过去...`
+          game.messageTimer = 60
+        }
         
         // 如果离食物很近，吃掉它
         if (closestFoodDist < 15) {
@@ -847,6 +853,22 @@ function App() {
           // 向食物移动
           queen.targetX = foodX
           queen.targetY = foodY
+          
+          // 实际移动代码
+          const moveDx = foodX - queen.x
+          const moveDy = foodY - queen.y
+          const moveDist = Math.sqrt(moveDx * moveDx + moveDy * moveDy)
+          
+          if (moveDist > 1) {
+            queen.x += (moveDx / moveDist) * queen.speed
+            queen.y += (moveDy / moveDist) * queen.speed
+            // 更新方向
+            if (Math.abs(moveDx) > Math.abs(moveDy)) {
+              queen.direction = moveDx > 0 ? 1 : 3
+            } else {
+              queen.direction = moveDy > 0 ? 2 : 0
+            }
+          }
         }
       } else {
         // 没有食物时，在巢穴区域内缓慢移动
