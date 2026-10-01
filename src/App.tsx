@@ -840,8 +840,8 @@ function App() {
           game.messageTimer = 60
         }
         
-        // 如果离食物很近，吃掉它
-        if (closestFoodDist < 15) {
+        // 如果离食物很近，吃掉它（每60帧才能吃一次）
+        if (closestFoodDist < 15 && tickRef.current % 60 === 0) {
           targetFood.amount--
           game.foodForQueen++
           
@@ -863,8 +863,10 @@ function App() {
           
           game.message = `👑 蚁后吃了食物！储备: ${game.foodForQueen}`
           game.messageTimer = 80
-          
-          // 蚁后吃完食物后检查是否可以产卵
+        }
+        
+        // 蚁后吃完食物后检查是否可以产卵（每300帧才能产一次）
+        if (closestFoodDist < 15 && tickRef.current % 300 === 0 && game.foodForQueen >= 1) {
           const workerCountForLay = game.ants.filter(a => a.type === 'worker' && a.state !== 'dead').length
           const canLaySoldierForQueen = workerCountForLay >= 18
           
@@ -934,7 +936,10 @@ function App() {
             game.message = `🥚 蚁后产下了一枚工蚁卵！(1食物→1卵)`
             game.messageTimer = 150
           }
-        } else {
+        }
+        
+        // 如果食物不近，向食物移动
+        if (closestFoodDist >= 15) {
           // 向食物移动
           queen.targetX = foodX
           queen.targetY = foodY
