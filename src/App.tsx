@@ -70,6 +70,10 @@ const WORKER_MAX_AGE = 5400 // 工蚁寿命约90秒（60fps）
 const SOLDIER_MAX_AGE = 7200 // 兵蚁寿命约120秒
 const EGG_HATCH_TIME = 600 // 卵孵化时间10秒
 const FOOD_PER_EGG = 2 // 2个食物产1个卵
+const CAMERA_SPEED = 8 // 键盘/边缘滚动速度
+const MIN_ZOOM = 0.5
+const MAX_ZOOM = 3
+const EDGE_SCROLL_THRESHOLD = 50 // 边缘滚动触发距离
 
 // ============ 像素绘制工具 ============
 function drawPixelRect(
@@ -255,9 +259,14 @@ function App() {
   const tickRef = useRef<number>(0)
   const [, forceUpdate] = useState(0)
   const [camera, setCamera] = useState({ x: 0, y: 0 })
+  const [zoom, setZoom] = useState(1)
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
   const [showHelp, setShowHelp] = useState(false)
+  const [showMinimap, setShowMinimap] = useState(true)
+  const keysPressed = useRef<Set<string>>(new Set())
+  const mousePosition = useRef({ x: 0, y: 0 })
+  const touchStartRef = useRef<{ x: number; y: number; dist: number } | null>(null)
 
   // 初始化游戏
   const initGame = useCallback(() => {
@@ -347,6 +356,106 @@ function App() {
   useEffect(() => {
     initGame()
   }, [initGame])
+
+  // 键盘控制
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      keysPressed.current.add(e.key.toLowerCase())
+      // 空格键回到中心
+      if (e.key === ' ') {
+        e.preventDefault()
+        setCamera({
+          x: NEST_CENTER_X * TILE_SIZE - 400,
+          y: NEST_CENTER_Y * TILE_SIZE - 300,
+        })
+        setZoom(1)
+      }
+      // +/- 缩放
+      if (e.key === '=' || e.key === '+') {
+        setZoom(z => Math.min(MAX_ZOOM, z + 0.2))
+      }
+      if (e.key === '-') {
+        setZoom(z => Math.max(MIN_ZOOM, z - 0.2))
+      }
+    }
+    const handleKeyUp = (e: KeyboardEvent) => {
+      keysPressed.current.delete(e.key.toLowerCase())
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('keyup', handleKeyUp)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+    }
+  }, [])
+
+  // 鼠标滚轮缩放
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const delta = e.deltaY > 0 ? -0.1 : 0.1
+      setZoom(z => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z + delta)))
+    }
+    canvas.addEventListener('wheel', handleWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', handleWheel)
+  }, [])
+
+  // 触摸事件处理
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 1) {
+        touchStartRef.current = {
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY,
+          dist: 0,
+        }
+      } else if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX
+        const dy = e.touches[0].clientY - e.touches[1].clientY
+        touchStartRef.current = {
+          x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+          y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+          dist: Math.sqrt(dx * dx + dy * dy),
+        }
+      }
+    }
+    
+    const handleTouchMove = (e: TouchEvent) => {
+      e.preventDefault()
+      if (e.touches.length === 1 && touchStartRef.current) {
+        const dx = e.touches[0].clientX - touchStartRef.current.x
+        const dy = e.touches[0].clientY - touchStartRef.current.y
+        setCamera(c => ({ x: c.x - dx / zoom, y: c.y - dy / zoom }))
+        touchStartRef.current.x = e.touches[0].clientX
+        touchStartRef.current.y = e.touches[0].clientY
+      } else if (e.touches.length === 2 && touchStartRef.current) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX
+        const dy = e.touches[0].clientY - e.touches[1].clientY
+        const newDist = Math.sqrt(dx * dx + dy * dy)
+        const scale = newDist / touchStartRef.current.dist
+        setZoom(z => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z * scale)))
+        touchStartRef.current.dist = newDist
+      }
+    }
+    
+    const handleTouchEnd = () => {
+      touchStartRef.current = null
+    }
+    
+    canvas.addEventListener('touchstart', handleTouchStart, { passive: false })
+    canvas.addEventListener('touchmove', handleTouchMove, { passive: false })
+    canvas.addEventListener('touchend', handleTouchEnd)
+    return () => {
+      canvas.removeEventListener('touchstart', handleTouchStart)
+      canvas.removeEventListener('touchmove', handleTouchMove)
+      canvas.removeEventListener('touchend', handleTouchEnd)
+    }
+  }, [zoom])
 
   // 生成新蚂蚁
   const spawnAnt = useCallback((game: GameState, type: 'worker' | 'soldier', x: number, y: number) => {
@@ -653,6 +762,7 @@ function App() {
 
     const game = gameRef.current
     const cam = camera
+    const z = zoom
 
     ctx.imageSmoothingEnabled = false
 
@@ -660,9 +770,17 @@ function App() {
     ctx.fillStyle = '#2d1b0e'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
 
+    // 应用缩放
+    ctx.save()
+    ctx.scale(z, z)
+    
+    // 计算缩放后的可视区域
+    const viewW = canvas.width / z
+    const viewH = canvas.height / z
+
     // 绘制土壤纹理
-    for (let x = 0; x < canvas.width; x += 8) {
-      for (let y = 0; y < canvas.height; y += 8) {
+    for (let x = 0; x < viewW; x += 8) {
+      for (let y = 0; y < viewH; y += 8) {
         const worldX = x + cam.x
         const worldY = y + cam.y
         const noise = Math.sin(worldX * 0.05) * Math.cos(worldY * 0.05)
@@ -737,7 +855,7 @@ function App() {
     game.eggs.forEach((egg) => {
       const ex = egg.x - cam.x
       const ey = egg.y - cam.y
-      if (ex > -20 && ex < canvas.width + 20 && ey > -20 && ey < canvas.height + 20) {
+      if (ex > -20 && ex < viewW + 20 && ey > -20 && ey < viewH + 20) {
         drawEgg(ctx, ex, ey, egg.hatchTimer)
       }
     })
@@ -746,7 +864,7 @@ function App() {
     game.foods.forEach((food) => {
       const fx = food.x * TILE_SIZE - cam.x
       const fy = food.y * TILE_SIZE - cam.y
-      if (fx > -50 && fx < canvas.width + 50 && fy > -50 && fy < canvas.height + 50) {
+      if (fx > -50 && fx < viewW + 50 && fy > -50 && fy < viewH + 50) {
         drawPixelFood(ctx, fx, fy, food.type)
         // 食物量指示
         const barW = food.amount * 2
@@ -760,7 +878,7 @@ function App() {
       if (ant.state === 'dead') return
       const ax = ant.x - cam.x
       const ay = ant.y - cam.y
-      if (ax > -40 && ax < canvas.width + 40 && ay > -40 && ay < canvas.height + 40) {
+      if (ax > -40 && ax < viewW + 40 && ay > -40 && ay < viewH + 40) {
         drawPixelAnt(ctx, ax, ay, ant.direction, ant.frame, ant.type, ant.carryingFood)
         
         // 寿命指示条（仅非蚁后）
@@ -790,19 +908,79 @@ function App() {
     // 绘制网格参考线
     ctx.strokeStyle = 'rgba(255,255,255,0.03)'
     ctx.lineWidth = 1
-    for (let x = -cam.x % 40; x < canvas.width; x += 40) {
+    for (let x = -cam.x % 40; x < viewW; x += 40) {
       ctx.beginPath()
       ctx.moveTo(x, 0)
-      ctx.lineTo(x, canvas.height)
+      ctx.lineTo(x, viewH)
       ctx.stroke()
     }
-    for (let y = -cam.y % 40; y < canvas.height; y += 40) {
+    for (let y = -cam.y % 40; y < viewH; y += 40) {
       ctx.beginPath()
       ctx.moveTo(0, y)
-      ctx.lineTo(canvas.width, y)
+      ctx.lineTo(viewW, y)
       ctx.stroke()
     }
-  }, [camera])
+
+    // 恢复缩放
+    ctx.restore()
+
+    // 绘制小地图（不受缩放影响）
+    if (showMinimap) {
+      const mapSize = 150
+      const mapX = canvas.width - mapSize - 10
+      const mapY = canvas.height - mapSize - 10
+      const mapScale = 0.15 // 小地图缩放比例
+      
+      // 小地图背景
+      ctx.fillStyle = 'rgba(26, 15, 10, 0.9)'
+      ctx.fillRect(mapX - 2, mapY - 2, mapSize + 4, mapSize + 4)
+      ctx.strokeStyle = '#daa520'
+      ctx.lineWidth = 2
+      ctx.strokeRect(mapX - 2, mapY - 2, mapSize + 4, mapSize + 4)
+      
+      // 小地图内容
+      ctx.fillStyle = '#2d1b0e'
+      ctx.fillRect(mapX, mapY, mapSize, mapSize)
+      
+      // 蚁巢在小地图上的位置
+      const nestMapX = mapX + NEST_CENTER_X * TILE_SIZE * mapScale
+      const nestMapY = mapY + NEST_CENTER_Y * TILE_SIZE * mapScale
+      ctx.beginPath()
+      ctx.arc(nestMapX, nestMapY, 8, 0, Math.PI * 2)
+      ctx.fillStyle = '#8B6914'
+      ctx.fill()
+      
+      // 蚂蚁在小地图上的位置
+      game.ants.forEach(ant => {
+        if (ant.state === 'dead') return
+        const antMapX = mapX + ant.x * mapScale
+        const antMapY = mapY + ant.y * mapScale
+        if (antMapX >= mapX && antMapX <= mapX + mapSize && antMapY >= mapY && antMapY <= mapY + mapSize) {
+          ctx.fillStyle = ant.type === 'queen' ? '#FFD700' : ant.type === 'soldier' ? '#ff4444' : '#8B6914'
+          ctx.fillRect(antMapX - 1, antMapY - 1, 2, 2)
+        }
+      })
+      
+      // 食物在小地图上的位置
+      game.foods.forEach(food => {
+        const foodMapX = mapX + food.x * TILE_SIZE * mapScale
+        const foodMapY = mapY + food.y * TILE_SIZE * mapScale
+        if (foodMapX >= mapX && foodMapX <= mapX + mapSize && foodMapY >= mapY && foodMapY <= mapY + mapSize) {
+          ctx.fillStyle = '#90EE90'
+          ctx.fillRect(foodMapX - 1, foodMapY - 1, 2, 2)
+        }
+      })
+      
+      // 当前视角框
+      const viewFrameX = mapX + cam.x * mapScale
+      const viewFrameY = mapY + cam.y * mapScale
+      const viewFrameW = viewW * mapScale
+      const viewFrameH = viewH * mapScale
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 1
+      ctx.strokeRect(viewFrameX, viewFrameY, viewFrameW, viewFrameH)
+    }
+  }, [camera, zoom, showMinimap])
 
   // Canvas 自适应大小
   useEffect(() => {
@@ -818,6 +996,50 @@ function App() {
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
+
+  // 键盘和边缘滚动控制
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      mousePosition.current = { x: e.clientX, y: e.clientY }
+    }
+    window.addEventListener('mousemove', handleMouseMove)
+    
+    const scrollInterval = setInterval(() => {
+      const keys = keysPressed.current
+      let dx = 0
+      let dy = 0
+      
+      // 键盘控制
+      if (keys.has('w') || keys.has('arrowup')) dy -= CAMERA_SPEED
+      if (keys.has('s') || keys.has('arrowdown')) dy += CAMERA_SPEED
+      if (keys.has('a') || keys.has('arrowleft')) dx -= CAMERA_SPEED
+      if (keys.has('d') || keys.has('arrowright')) dx += CAMERA_SPEED
+      
+      // 边缘滚动
+      const canvas = canvasRef.current
+      if (canvas) {
+        const rect = canvas.getBoundingClientRect()
+        const mx = mousePosition.current.x
+        const my = mousePosition.current.y
+        
+        if (mx >= rect.left && mx <= rect.right && my >= rect.top && my <= rect.bottom) {
+          if (mx - rect.left < EDGE_SCROLL_THRESHOLD) dx -= CAMERA_SPEED
+          if (rect.right - mx < EDGE_SCROLL_THRESHOLD) dx += CAMERA_SPEED
+          if (my - rect.top < EDGE_SCROLL_THRESHOLD) dy -= CAMERA_SPEED
+          if (rect.bottom - my < EDGE_SCROLL_THRESHOLD) dy += CAMERA_SPEED
+        }
+      }
+      
+      if (dx !== 0 || dy !== 0) {
+        setCamera(c => ({ x: c.x + dx / zoom, y: c.y + dy / zoom }))
+      }
+    }, 16) // 约60fps
+    
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      clearInterval(scrollInterval)
+    }
+  }, [zoom])
 
   // 游戏循环
   useEffect(() => {
@@ -839,8 +1061,9 @@ function App() {
     const rect = canvas.getBoundingClientRect()
     const scaleX = canvas.width / rect.width
     const scaleY = canvas.height / rect.height
-    const clickX = (e.clientX - rect.left) * scaleX + camera.x
-    const clickY = (e.clientY - rect.top) * scaleY + camera.y
+    // 考虑缩放
+    const clickX = ((e.clientX - rect.left) * scaleX) / zoom + camera.x
+    const clickY = ((e.clientY - rect.top) * scaleY) / zoom + camera.y
     const worldX = Math.floor(clickX / TILE_SIZE)
     const worldY = Math.floor(clickY / TILE_SIZE)
 
@@ -902,15 +1125,15 @@ function App() {
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 2 || e.button === 1) {
       setIsDragging(true)
-      setDragStart({ x: e.clientX - camera.x, y: e.clientY - camera.y })
+      setDragStart({ x: e.clientX / zoom - camera.x, y: e.clientY / zoom - camera.y })
     }
   }
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handleMouseMoveDrag = (e: React.MouseEvent) => {
     if (isDragging) {
       setCamera({
-        x: e.clientX - dragStart.x,
-        y: e.clientY - dragStart.y,
+        x: e.clientX / zoom - dragStart.x,
+        y: e.clientY / zoom - dragStart.y,
       })
     }
   }
@@ -1034,10 +1257,102 @@ function App() {
             style={{ imageRendering: 'pixelated' }}
             onClick={handleCanvasClick}
             onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
+            onMouseMove={handleMouseMoveDrag}
             onMouseUp={handleMouseUp}
             onContextMenu={(e) => e.preventDefault()}
           />
+
+          {/* 视角控制按钮 */}
+          <div className="absolute top-3 right-3 flex flex-col gap-2">
+            {/* 缩放控制 */}
+            <div className="flex flex-col gap-1 bg-[#2d1b0e]/80 border border-[#4a3520] rounded p-1">
+              <button
+                onClick={() => setZoom(z => Math.min(MAX_ZOOM, z + 0.2))}
+                className="w-8 h-8 bg-[#3d2517] hover:bg-[#5c4033] text-[#daa520] border border-[#4a3520] text-lg font-bold flex items-center justify-center"
+                title="放大 (+)"
+              >
+                +
+              </button>
+              <div className="text-center text-[#daa520] text-xs py-1">
+                {Math.round(zoom * 100)}%
+              </div>
+              <button
+                onClick={() => setZoom(z => Math.max(MIN_ZOOM, z - 0.2))}
+                className="w-8 h-8 bg-[#3d2517] hover:bg-[#5c4033] text-[#daa520] border border-[#4a3520] text-lg font-bold flex items-center justify-center"
+                title="缩小 (-)"
+              >
+                −
+              </button>
+            </div>
+            
+            {/* 回到中心 */}
+            <button
+              onClick={() => {
+                setCamera({
+                  x: NEST_CENTER_X * TILE_SIZE - 400,
+                  y: NEST_CENTER_Y * TILE_SIZE - 300,
+                })
+                setZoom(1)
+              }}
+              className="w-10 h-10 bg-[#3d2517] hover:bg-[#5c4033] text-[#daa520] border border-[#4a3520] flex items-center justify-center text-lg"
+              title="回到蚁巢 (空格)"
+            >
+              🏠
+            </button>
+            
+            {/* 小地图开关 */}
+            <button
+              onClick={() => setShowMinimap(m => !m)}
+              className={`w-10 h-10 border flex items-center justify-center text-lg ${
+                showMinimap 
+                  ? 'bg-[#5c4033] border-[#daa520] text-[#daa520]' 
+                  : 'bg-[#3d2517] border-[#4a3520] text-[#a08060]'
+              }`}
+              title="小地图"
+            >
+              🗺️
+            </button>
+          </div>
+
+          {/* 方向控制（移动端友好） */}
+          <div className="absolute bottom-3 left-3 grid grid-cols-3 gap-1 md:hidden">
+            <div></div>
+            <button
+              onTouchStart={() => keysPressed.current.add('arrowup')}
+              onTouchEnd={() => keysPressed.current.delete('arrowup')}
+              className="w-10 h-10 bg-[#3d2517]/80 border border-[#4a3520] text-[#daa520] flex items-center justify-center text-lg active:bg-[#5c4033]"
+            >
+              ↑
+            </button>
+            <div></div>
+            <button
+              onTouchStart={() => keysPressed.current.add('arrowleft')}
+              onTouchEnd={() => keysPressed.current.delete('arrowleft')}
+              className="w-10 h-10 bg-[#3d2517]/80 border border-[#4a3520] text-[#daa520] flex items-center justify-center text-lg active:bg-[#5c4033]"
+            >
+              ←
+            </button>
+            <button
+              onTouchStart={() => keysPressed.current.add('arrowdown')}
+              onTouchEnd={() => keysPressed.current.delete('arrowdown')}
+              className="w-10 h-10 bg-[#3d2517]/80 border border-[#4a3520] text-[#daa520] flex items-center justify-center text-lg active:bg-[#5c4033]"
+            >
+              ↓
+            </button>
+            <button
+              onTouchStart={() => keysPressed.current.add('arrowright')}
+              onTouchEnd={() => keysPressed.current.delete('arrowright')}
+              className="w-10 h-10 bg-[#3d2517]/80 border border-[#4a3520] text-[#daa520] flex items-center justify-center text-lg active:bg-[#5c4033]"
+            >
+              →
+            </button>
+          </div>
+
+          {/* 操作提示 */}
+          <div className="absolute bottom-3 right-3 text-[#6b4423] text-xs hidden md:block">
+            <div>WASD/方向键 移动 | 滚轮 缩放</div>
+            <div>空格 回到中心 | 右键拖拽</div>
+          </div>
 
           {/* 消息提示 */}
           {game.messageTimer > 0 && (
@@ -1071,7 +1386,16 @@ function App() {
                 <p>• 蚁后 <strong className="text-[#FFD700]">永生</strong></p>
                 <p>• 蚂蚁死后会从蚁群中消失</p>
                 <hr className="border-[#4a3520]" />
-                <p>🖱️ <strong className="text-[#daa520]">操作：</strong>左键放置 | 右键拖拽视角</p>
+                <p>🎮 <strong className="text-[#daa520]">视角控制：</strong></p>
+                <p>• <strong>WASD/方向键</strong> - 移动视角</p>
+                <p>• <strong>鼠标滚轮</strong> - 缩放（0.5x ~ 3x）</p>
+                <p>• <strong>空格键</strong> - 快速回到蚁巢中心</p>
+                <p>• <strong>右键拖拽</strong> - 平移视角</p>
+                <p>• <strong>鼠标靠近边缘</strong> - 自动滚动</p>
+                <p>• <strong>触摸滑动</strong> - 移动端拖动/双指缩放</p>
+                <p>• 右上角按钮可控制缩放、回中心、小地图</p>
+                <hr className="border-[#4a3520]" />
+                <p>🖱️ <strong className="text-[#daa520]">操作：</strong>左键放置食物 | 右键拖拽视角</p>
               </div>
               <button
                 onClick={() => setShowHelp(false)}
@@ -1086,8 +1410,8 @@ function App() {
 
       {/* 底部信息栏 */}
       <div className="px-4 py-1 bg-[#2d1b0e] border-t-2 border-[#4a3520] flex items-center justify-between text-xs text-[#6b4423]">
-        <span>左键放置食物 | 右键拖拽视角 | 工蚁寿命约90秒 | 蚁后永生</span>
-        <span>像素蚂蚁饲养 v2.0 | {FOOD_PER_EGG}食物→1卵</span>
+        <span>WASD/方向键移动 | 滚轮缩放 | 空格回中心 | 左键放置 | 右键拖拽</span>
+        <span>像素蚂蚁饲养 v3.0 | {FOOD_PER_EGG}食物→1卵 | 缩放: {Math.round(zoom * 100)}%</span>
       </div>
     </div>
   )
