@@ -709,20 +709,24 @@ function App() {
       return true
     })
 
-    // 幼虫成长（需要工蚁喂食）
+    // 幼虫成长（需要工蚁或蚁后喂食）
+    const larvasToRemove: number[] = []
+    
     game.larvas.forEach(larva => {
       larva.frame++
       
-      // 检查是否有工蚁在附近喂食
+      // 检查是否有工蚁或蚁后在附近喂食
       if (larva.foodReceived < larva.foodRequired) {
-        const nearbyWorkers = game.ants.filter(ant => {
-          if (ant.type !== 'worker' || ant.state === 'dead') return false
+        const nearbyFeeders = game.ants.filter(ant => {
+          if (ant.state === 'dead') return false
+          // 工蚁或蚁后都可以喂食
+          if (ant.type !== 'worker' && ant.type !== 'queen') return false
           const dist = Math.sqrt((ant.x - larva.x) ** 2 + (ant.y - larva.y) ** 2)
-          return dist < 20
+          return dist < 30 // 增加到30像素范围
         })
         
-        // 如果有工蚁在附近，每60帧喂一次
-        if (nearbyWorkers.length > 0 && tickRef.current % 60 === 0) {
+        // 如果有喂食者在附近，每60帧喂一次
+        if (nearbyFeeders.length > 0 && tickRef.current % 60 === 0) {
           larva.foodReceived++
           // 喂食粒子
           game.particles.push({
@@ -734,6 +738,11 @@ function App() {
             maxLife: 20,
             color: '#90EE90',
           })
+          
+          if (tickRef.current % 180 === 0) {
+            game.message = `🍼 幼虫进食中... (${larva.foodReceived}/${larva.foodRequired})`
+            game.messageTimer = 60
+          }
         }
       } else {
         // 幼虫吃饱了，变成茧
@@ -745,11 +754,16 @@ function App() {
           hatchTimer: 600, // 10秒后孵化
         }
         game.cocoons.push(newCocoon)
-        game.larvas = game.larvas.filter(l => l.id !== larva.id)
+        larvasToRemove.push(larva.id)
         game.message = `🟠 ${larva.type === 'worker' ? '工蚁' : '兵蚁'}幼虫结茧了！`
         game.messageTimer = 120
       }
     })
+    
+    // 移除已结茧的幼虫
+    if (larvasToRemove.length > 0) {
+      game.larvas = game.larvas.filter(l => !larvasToRemove.includes(l.id))
+    }
 
     // 茧孵化成蚂蚁
     game.cocoons = game.cocoons.filter(cocoon => {
@@ -849,6 +863,77 @@ function App() {
           
           game.message = `👑 蚁后吃了食物！储备: ${game.foodForQueen}`
           game.messageTimer = 80
+          
+          // 蚁后吃完食物后检查是否可以产卵
+          const workerCountForLay = game.ants.filter(a => a.type === 'worker' && a.state !== 'dead').length
+          const canLaySoldierForQueen = workerCountForLay >= 18
+          
+          // 先尝试产兵蚁（如果有足够工蚁且有2个食物）
+          if (canLaySoldierForQueen && game.foodForQueen >= 2 && Math.random() < 0.3) {
+            game.foodForQueen -= 2
+            game.queenHunger = Math.max(0, game.queenHunger - 30)
+            
+            // 产兵蚁卵
+            const eggAngle = Math.random() * Math.PI * 2
+            const eggDist = 15 + Math.random() * 10
+            const newEgg: Egg = {
+              id: Date.now() + Math.random(),
+              x: queen.x + Math.cos(eggAngle) * eggDist,
+              y: queen.y + Math.sin(eggAngle) * eggDist,
+              hatchTimer: EGG_HATCH_TIME,
+              type: 'soldier',
+            }
+            game.eggs.push(newEgg)
+            
+            // 产卵粒子
+            for (let i = 0; i < 8; i++) {
+              game.particles.push({
+                x: queen.x,
+                y: queen.y,
+                vx: (Math.random() - 0.5) * 3,
+                vy: (Math.random() - 0.5) * 3,
+                life: 30,
+                maxLife: 30,
+                color: '#ff4444',
+              })
+            }
+            
+            game.message = `🥚 蚁后产下了一枚兵蚁卵！(2食物→1卵)`
+            game.messageTimer = 150
+          }
+          // 产工蚁卵（需要1个食物）
+          else if (game.foodForQueen >= 1) {
+            game.foodForQueen -= 1
+            game.queenHunger = Math.max(0, game.queenHunger - 20)
+            
+            // 产工蚁卵
+            const eggAngle = Math.random() * Math.PI * 2
+            const eggDist = 15 + Math.random() * 10
+            const newEgg: Egg = {
+              id: Date.now() + Math.random(),
+              x: queen.x + Math.cos(eggAngle) * eggDist,
+              y: queen.y + Math.sin(eggAngle) * eggDist,
+              hatchTimer: EGG_HATCH_TIME,
+              type: 'worker',
+            }
+            game.eggs.push(newEgg)
+            
+            // 产卵粒子
+            for (let i = 0; i < 8; i++) {
+              game.particles.push({
+                x: queen.x,
+                y: queen.y,
+                vx: (Math.random() - 0.5) * 3,
+                vy: (Math.random() - 0.5) * 3,
+                life: 30,
+                maxLife: 30,
+                color: '#FFD700',
+              })
+            }
+            
+            game.message = `🥚 蚁后产下了一枚工蚁卵！(1食物→1卵)`
+            game.messageTimer = 150
+          }
         } else {
           // 向食物移动
           queen.targetX = foodX
@@ -1184,13 +1269,44 @@ function App() {
                 }
               }
             } else {
-              // 随机巡逻
-              if (Math.random() < 0.02) {
-                const patrolRadius = ant.type === 'soldier' ? NEST_RADIUS + 15 : NEST_RADIUS + 35
-                const angle = Math.random() * Math.PI * 2
-                const r = Math.random() * patrolRadius
-                ant.targetX = NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * r * TILE_SIZE
-                ant.targetY = NEST_CENTER_Y * TILE_SIZE + Math.sin(angle) * r * TILE_SIZE
+              // 工蚁：优先去喂食幼虫
+              if (ant.type === 'worker' && game.larvas.length > 0) {
+                // 找需要喂食的幼虫
+                const hungryLarvas = game.larvas.filter(l => l.foodReceived < l.foodRequired)
+                if (hungryLarvas.length > 0) {
+                  // 找最近的幼虫
+                  let closestLarva = hungryLarvas[0]
+                  let closestLarvaDist = Infinity
+                  hungryLarvas.forEach(larva => {
+                    const dist = Math.sqrt((larva.x - ant.x) ** 2 + (larva.y - ant.y) ** 2)
+                    if (dist < closestLarvaDist) {
+                      closestLarvaDist = dist
+                      closestLarva = larva
+                    }
+                  })
+                  
+                  // 向幼虫移动
+                  ant.targetX = closestLarva.x
+                  ant.targetY = closestLarva.y
+                } else {
+                  // 所有幼虫都吃饱了，随机巡逻
+                  if (Math.random() < 0.02) {
+                    const patrolRadius = NEST_RADIUS + 35
+                    const angle = Math.random() * Math.PI * 2
+                    const r = Math.random() * patrolRadius
+                    ant.targetX = NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * r * TILE_SIZE
+                    ant.targetY = NEST_CENTER_Y * TILE_SIZE + Math.sin(angle) * r * TILE_SIZE
+                  }
+                }
+              } else {
+                // 兵蚁或没有幼虫：随机巡逻
+                if (Math.random() < 0.02) {
+                  const patrolRadius = ant.type === 'soldier' ? NEST_RADIUS + 15 : NEST_RADIUS + 35
+                  const angle = Math.random() * Math.PI * 2
+                  const r = Math.random() * patrolRadius
+                  ant.targetX = NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * r * TILE_SIZE
+                  ant.targetY = NEST_CENTER_Y * TILE_SIZE + Math.sin(angle) * r * TILE_SIZE
+                }
               }
             }
           }
