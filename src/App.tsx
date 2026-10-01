@@ -44,21 +44,37 @@ interface Particle {
   color: string
 }
 
+interface Cricket {
+  id: number
+  x: number
+  y: number
+  targetX: number
+  targetY: number
+  hp: number
+  maxHp: number
+  direction: number
+  frame: number
+  speed: number
+  jumpTimer: number
+}
+
 interface GameState {
   ants: Ant[]
   eggs: Egg[]
   foods: Food[]
   particles: Particle[]
+  crickets: Cricket[]
   foodStored: number
   foodForQueen: number // 给蚁后的食物计数
   totalAnts: number
   day: number
   nestLevel: number
-  selectedTool: 'food_seed' | 'food_sugar' | 'food_insect' | 'water' | 'none'
+  selectedTool: 'food_seed' | 'food_sugar' | 'food_insect' | 'water' | 'cricket' | 'none'
   message: string
   messageTimer: number
   queenHunger: number // 蚁后饥饿值 0-100
   nextAntId: number
+  nextCricketId: number
 }
 
 // ============ 常量 ============
@@ -132,12 +148,12 @@ function drawPixelAnt(
   ctx.translate(Math.floor(x), Math.floor(y))
   ctx.scale(scale, scale)
 
-  // 根据方向旋转 - 蚂蚁默认朝右
+  // 根据方向旋转 - 蚂蚁默认头朝左
   // direction: 0=上, 1=右, 2=下, 3=左
   if (direction === 0) ctx.rotate(-Math.PI / 2)      // 朝上：逆时针90度
   else if (direction === 2) ctx.rotate(Math.PI / 2)   // 朝下：顺时针90度
-  else if (direction === 3) ctx.scale(-1, 1)          // 朝左：水平翻转
-  // direction === 1 朝右：不做任何变换
+  else if (direction === 1) ctx.scale(-1, 1)          // 朝右：翻转使头朝右（朝前）
+  // direction === 3 朝左：不翻转，头默认朝左（朝前）
 
   // === 横向蚂蚁绘制（头在左，腹部在右，身体水平）===
   
@@ -241,6 +257,81 @@ function drawEgg(ctx: CanvasRenderingContext2D, x: number, y: number, hatchTimer
   }
 }
 
+// 绘制蟋蟀
+function drawCricket(ctx: CanvasRenderingContext2D, x: number, y: number, direction: number, frame: number, hp: number, maxHp: number) {
+  const s = 2
+  const legAnim = Math.floor(frame / 4) % 2
+  const jumpOffset = Math.sin(frame * 0.2) * 2
+  
+  
+  ctx.save()
+  ctx.translate(Math.floor(x), Math.floor(y) - jumpOffset)
+  
+  // 根据方向翻转
+  if (direction === 3) ctx.scale(-1, 1) // 朝左时翻转
+  
+  // 蟋蟀身体（横向，头在右）
+  // 触角
+  ctx.fillStyle = '#2d4a1e'
+  ctx.fillRect(s * 5, -s * 2, s * 3, s)
+  ctx.fillRect(s * 5, s * 1, s * 3, s)
+  ctx.fillRect(s * 7, -s * 3, s, s)
+  ctx.fillRect(s * 7, s * 2, s, s)
+  
+  // 头部
+  ctx.fillStyle = '#3d5a2e'
+  ctx.fillRect(s * 3, -s * 1.5, s * 3, s * 3)
+  
+  // 眼睛
+  ctx.fillStyle = '#ff0000'
+  ctx.fillRect(s * 4, -s, s, s)
+  ctx.fillRect(s * 4, 0, s, s)
+  
+  // 胸部
+  ctx.fillStyle = '#4a6b3a'
+  ctx.fillRect(s * 0.5, -s * 1, s * 3, s * 2)
+  
+  // 腹部（大椭圆）
+  ctx.fillStyle = '#3d5a2e'
+  ctx.fillRect(-s * 4, -s * 2, s * 5, s * 4)
+  ctx.fillRect(-s * 5, -s * 1.5, s * 2, s * 3)
+  
+  // 腹部花纹
+  ctx.fillStyle = '#2d4a1e'
+  ctx.fillRect(-s * 3, -s * 0.5, s * 3, s)
+  
+  // 后腿（强壮的跳跃腿）
+  ctx.fillStyle = '#4a6b3a'
+  const legOff = legAnim * s
+  // 右后腿
+  ctx.fillRect(-s * 2, s * 2 + legOff, s * 2, s)
+  ctx.fillRect(-s * 1, s * 3 + legOff, s, s * 2)
+  ctx.fillRect(-s * 2, s * 4 + legOff, s * 2, s)
+  // 左后腿
+  ctx.fillRect(-s * 2, -s * 3 - legOff, s * 2, s)
+  ctx.fillRect(-s * 1, -s * 5 - legOff, s, s * 2)
+  ctx.fillRect(-s * 2, -s * 5 - legOff, s * 2, s)
+  
+  // 前腿和中腿
+  ctx.fillRect(s * 1, s * 1.5, s, s * 2)
+  ctx.fillRect(s * 1, -s * 2.5, s, s * 2)
+  ctx.fillRect(s * 2.5, s * 1.5, s, s * 2)
+  ctx.fillRect(s * 2.5, -s * 2.5, s, s * 2)
+  
+  ctx.restore()
+  
+  // 血条
+  if (hp < maxHp) {
+    const barWidth = 20
+    const barX = x - barWidth / 2
+    const barY = y - 18
+    ctx.fillStyle = '#333'
+    ctx.fillRect(barX, barY, barWidth, 3)
+    ctx.fillStyle = hp > maxHp * 0.5 ? '#44ff44' : hp > maxHp * 0.25 ? '#ffaa00' : '#ff4444'
+    ctx.fillRect(barX, barY, (hp / maxHp) * barWidth, 3)
+  }
+}
+
 // ============ 主组件 ============
 function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -249,6 +340,7 @@ function App() {
     eggs: [],
     foods: [],
     particles: [],
+    crickets: [],
     foodStored: 10,
     foodForQueen: 0,
     totalAnts: 0,
@@ -259,6 +351,7 @@ function App() {
     messageTimer: 300,
     queenHunger: 50,
     nextAntId: 1,
+    nextCricketId: 1,
   })
   const animFrameRef = useRef<number>(0)
   const tickRef = useRef<number>(0)
@@ -280,6 +373,7 @@ function App() {
     game.eggs = []
     game.foods = []
     game.particles = []
+    game.crickets = []
     game.foodStored = 10
     game.foodForQueen = 0
     game.day = 1
@@ -288,6 +382,7 @@ function App() {
     game.messageTimer = 300
     game.queenHunger = 50
     game.nextAntId = 1
+    game.nextCricketId = 1
 
     // 创建蚁后（固定在巢中心，不会移动）
     game.ants.push({
@@ -546,6 +641,35 @@ function App() {
       return true
     })
 
+    // 更新蟋蟀
+    game.crickets.forEach(cricket => {
+      cricket.frame++
+      
+      // 蟋蟀随机移动
+      if (cricket.jumpTimer <= 0) {
+        // 选择新目标
+        const angle = Math.random() * Math.PI * 2
+        const dist = 30 + Math.random() * 60
+        cricket.targetX = cricket.x + Math.cos(angle) * dist
+        cricket.targetY = cricket.y + Math.sin(angle) * dist
+        cricket.jumpTimer = 60 + Math.floor(Math.random() * 120) // 1-3秒后再次跳跃
+      } else {
+        cricket.jumpTimer--
+      }
+      
+      // 向目标移动
+      const dx = cricket.targetX - cricket.x
+      const dy = cricket.targetY - cricket.y
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      
+      if (dist > 5) {
+        cricket.x += (dx / dist) * cricket.speed
+        cricket.y += (dy / dist) * cricket.speed
+        // 更新方向
+        cricket.direction = dx > 0 ? 1 : 3
+      }
+    })
+
     // 蚁后产卵逻辑
     const queen = game.ants.find(a => a.type === 'queen' && a.state !== 'dead')
     if (queen) {
@@ -736,13 +860,80 @@ function App() {
             ant.targetX = NEST_CENTER_X * TILE_SIZE
             ant.targetY = NEST_CENTER_Y * TILE_SIZE
           } else {
-            // 随机巡逻
-            if (Math.random() < 0.02) {
-              const patrolRadius = ant.type === 'soldier' ? NEST_RADIUS + 15 : NEST_RADIUS + 35
-              const angle = Math.random() * Math.PI * 2
-              const r = Math.random() * patrolRadius
-              ant.targetX = NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * r * TILE_SIZE
-              ant.targetY = NEST_CENTER_Y * TILE_SIZE + Math.sin(angle) * r * TILE_SIZE
+            // 兵蚁优先寻找蟋蟀攻击
+            if (ant.type === 'soldier' && game.crickets.length > 0) {
+              let closestCricket: Cricket | null = null
+              let closestDist = Infinity
+              game.crickets.forEach(cricket => {
+                const cd = Math.sqrt((cricket.x - ant.x) ** 2 + (cricket.y - ant.y) ** 2)
+                if (cd < closestDist) {
+                  closestDist = cd
+                  closestCricket = cricket
+                }
+              })
+              
+              if (closestCricket) {
+                const target = closestCricket as Cricket
+                ant.targetX = target.x
+                ant.targetY = target.y
+                
+                // 到达蟋蟀附近，开始攻击
+                if (closestDist < 15) {
+                  // 攻击蟋蟀
+                  if (tickRef.current % 30 === 0) {
+                    target.hp -= 5
+                    // 攻击粒子
+                    for (let i = 0; i < 3; i++) {
+                      game.particles.push({
+                        x: target.x + (Math.random() - 0.5) * 10,
+                        y: target.y + (Math.random() - 0.5) * 10,
+                        vx: (Math.random() - 0.5) * 3,
+                        vy: -Math.random() * 2,
+                        life: 15,
+                        maxLife: 15,
+                        color: '#ff4444',
+                      })
+                    }
+                    
+                    // 蟋蟀死亡
+                    if (target.hp <= 0) {
+                      game.crickets = game.crickets.filter(c => c.id !== target.id)
+                      // 掉落食物
+                      const foodDrop = 8 + Math.floor(Math.random() * 5)
+                      game.foods.push({
+                        id: Date.now() + Math.random(),
+                        x: Math.floor(target.x / TILE_SIZE),
+                        y: Math.floor(target.y / TILE_SIZE),
+                        amount: foodDrop,
+                        type: 'insect',
+                      })
+                      // 死亡粒子
+                      for (let i = 0; i < 10; i++) {
+                        game.particles.push({
+                          x: target.x,
+                          y: target.y,
+                          vx: (Math.random() - 0.5) * 4,
+                          vy: (Math.random() - 0.5) * 4,
+                          life: 30,
+                          maxLife: 30,
+                          color: '#4a6b3a',
+                        })
+                      }
+                      game.message = `⚔️ 兵蚁击杀了蟋蟀！掉落 ${foodDrop} 食物`
+                      game.messageTimer = 150
+                    }
+                  }
+                }
+              }
+            } else {
+              // 随机巡逻
+              if (Math.random() < 0.02) {
+                const patrolRadius = ant.type === 'soldier' ? NEST_RADIUS + 15 : NEST_RADIUS + 35
+                const angle = Math.random() * Math.PI * 2
+                const r = Math.random() * patrolRadius
+                ant.targetX = NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * r * TILE_SIZE
+                ant.targetY = NEST_CENTER_Y * TILE_SIZE + Math.sin(angle) * r * TILE_SIZE
+              }
             }
           }
         }
@@ -875,6 +1066,15 @@ function App() {
         const barW = food.amount * 2
         drawPixelRect(ctx, fx - 8, fy + 10, barW, 3, '#4CAF50')
         drawPixelRect(ctx, fx - 8, fy + 10, 20, 3, 'rgba(255,255,255,0.2)')
+      }
+    })
+
+    // 绘制蟋蟀
+    game.crickets.forEach((cricket) => {
+      const cx = cricket.x - cam.x
+      const cy = cricket.y - cam.y
+      if (cx > -50 && cx < viewW + 50 && cy > -50 && cy < viewH + 50) {
+        drawCricket(ctx, cx, cy, cricket.direction, cricket.frame, cricket.hp, cricket.maxHp)
       }
     })
 
@@ -1102,6 +1302,23 @@ function App() {
       })
       game.message = '🦗 放置了昆虫！高蛋白促进产卵'
       game.messageTimer = 100
+    } else if (game.selectedTool === 'cricket') {
+      const newCricket: Cricket = {
+        id: game.nextCricketId++,
+        x: clickX,
+        y: clickY,
+        targetX: clickX,
+        targetY: clickY,
+        hp: 50,
+        maxHp: 50,
+        direction: 1,
+        frame: 0,
+        speed: 1.5 + Math.random() * 0.5,
+        jumpTimer: 0,
+      }
+      game.crickets.push(newCricket)
+      game.message = '🦟 放置了蟋蟀！兵蚁会去攻击它'
+      game.messageTimer = 100
     } else if (game.selectedTool === 'water') {
       game.ants.forEach((ant) => {
         if (ant.state === 'dead') return
@@ -1166,6 +1383,7 @@ function App() {
           <span className="text-[#90EE90]">🍖 食物: {game.foodStored}</span>
           <span className="text-[#FFB6C1]">🐜 存活: {aliveAnts.length}</span>
           <span className="text-[#FFD700]">🥚 卵: {game.eggs.length}</span>
+          <span className="text-[#4a6b3a]">🦟 蟋蟀: {game.crickets.length}</span>
           <span className="text-[#87CEEB]">🏰 Lv.{game.nestLevel}</span>
           <span className={game.queenHunger > 70 ? 'text-red-400' : game.queenHunger > 40 ? 'text-yellow-400' : 'text-green-400'}>
             👑 蚁后饥饿: {Math.floor(game.queenHunger)}%
@@ -1190,6 +1408,7 @@ function App() {
             { tool: 'food_seed' as const, icon: '🌱', name: '种子', desc: '食物量+8' },
             { tool: 'food_sugar' as const, icon: '🍬', name: '糖分', desc: '食物量+12' },
             { tool: 'food_insect' as const, icon: '🦗', name: '昆虫', desc: '食物量+15' },
+            { tool: 'cricket' as const, icon: '🦟', name: '蟋蟀', desc: '兵蚁会攻击' },
             { tool: 'water' as const, icon: '💧', name: '浇水', desc: '恢复体力' },
           ].map(({ tool, icon, name, desc }) => (
             <button
@@ -1219,6 +1438,7 @@ function App() {
               <div>🔴 兵蚁: {soldierCount}</div>
               <div>👑 蚁后: {aliveAnts.filter(a => a.type === 'queen').length}</div>
               <div>🥚 卵: {game.eggs.length}</div>
+              <div>🦟 蟋蟀: {game.crickets.length}</div>
               <div>🍖 搬运中: {aliveAnts.filter(a => a.state === 'carrying').length}</div>
               <div>🔍 觅食中: {aliveAnts.filter(a => a.state === 'seeking').length}</div>
             </div>
@@ -1384,6 +1604,12 @@ function App() {
                 <p>• 接受工蚁送来的食物后产卵</p>
                 <p>• 寿命 <strong className="text-[#FFD700]">无限</strong>（永生）</p>
                 <p>• 注意饥饿度！太高会影响产卵</p>
+                <hr className="border-[#4a3520]" />
+                <p>⚔️ <strong className="text-[#daa520]">战斗系统：</strong></p>
+                <p>• 放置 <strong className="text-[#FFD700]">蟋蟀</strong> 让兵蚁攻击</p>
+                <p>• 兵蚁会自动寻找并攻击蟋蟀</p>
+                <p>• 蟋蟀被击杀后 <strong className="text-[#90EE90]">掉落食物</strong></p>
+                <p>• 蟋蟀会随机跳跃移动</p>
                 <hr className="border-[#4a3520]" />
                 <p>⏳ <strong className="text-[#daa520]">寿命系统：</strong></p>
                 <p>• 工蚁寿命约 <strong>90秒</strong>（头顶有寿命条）</p>
