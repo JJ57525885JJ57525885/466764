@@ -7,14 +7,23 @@ interface Ant {
   y: number
   targetX: number
   targetY: number
-  state: 'idle' | 'seeking' | 'carrying' | 'returning' | 'resting'
+  state: 'idle' | 'seeking' | 'carrying' | 'feeding_queen' | 'resting' | 'dead'
   type: 'worker' | 'soldier' | 'queen'
   energy: number
   age: number
-  direction: number // 0-3 对应上下左右
+  maxAge: number // 寿命上限（帧数）
+  direction: number // 0=上, 1=右, 2=下, 3=左
   frame: number
   carryingFood: boolean
   speed: number
+}
+
+interface Egg {
+  id: number
+  x: number
+  y: number
+  hatchTimer: number // 孵化倒计时
+  type: 'worker' | 'soldier'
 }
 
 interface Food {
@@ -31,29 +40,36 @@ interface Particle {
   vx: number
   vy: number
   life: number
+  maxLife: number
   color: string
 }
 
 interface GameState {
   ants: Ant[]
+  eggs: Egg[]
   foods: Food[]
   particles: Particle[]
   foodStored: number
+  foodForQueen: number // 给蚁后的食物计数
   totalAnts: number
   day: number
   nestLevel: number
   selectedTool: 'food_seed' | 'food_sugar' | 'food_insect' | 'water' | 'none'
   message: string
   messageTimer: number
+  queenHunger: number // 蚁后饥饿值 0-100
+  nextAntId: number
 }
 
 // ============ 常量 ============
 const TILE_SIZE = 4
-const WORLD_W = 200
-const WORLD_H = 150
 const NEST_CENTER_X = 100
 const NEST_CENTER_Y = 90
 const NEST_RADIUS = 25
+const WORKER_MAX_AGE = 5400 // 工蚁寿命约90秒（60fps）
+const SOLDIER_MAX_AGE = 7200 // 兵蚁寿命约120秒
+const EGG_HATCH_TIME = 600 // 卵孵化时间10秒
+const FOOD_PER_EGG = 2 // 2个食物产1个卵
 
 // ============ 像素绘制工具 ============
 function drawPixelRect(
@@ -67,8 +83,6 @@ function drawPixelRect(
   ctx.fillStyle = color
   ctx.fillRect(Math.floor(x), Math.floor(y), w, h)
 }
-
-// 蚂蚁绘制在 drawPixelPixelAnt 函数中实现
 
 function drawPixelFood(ctx: CanvasRenderingContext2D, x: number, y: number, type: string) {
   const s = TILE_SIZE
@@ -88,20 +102,154 @@ function drawPixelFood(ctx: CanvasRenderingContext2D, x: number, y: number, type
   }
 }
 
+// ============ 绘制横向蚂蚁 ============
+// 蚂蚁默认朝右（水平方向），通过旋转适配不同方向
+function drawPixelAnt(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  direction: number,
+  frame: number,
+  type: string,
+  carrying: boolean
+) {
+  const s = 2
+  const colors: Record<string, { body: string; head: string; legs: string; accent: string }> = {
+    worker: { body: '#5c3a1e', head: '#7a4e2a', legs: '#3d2510', accent: '#8B6914' },
+    soldier: { body: '#8b2020', head: '#a53030', legs: '#6b1010', accent: '#ff4444' },
+    queen: { body: '#8b7514', head: '#b8960a', legs: '#6b5510', accent: '#FFD700' },
+  }
+  const c = colors[type] || colors.worker
+  const legAnim = Math.floor(frame / 6) % 2
+  const isQueen = type === 'queen'
+  const scale = isQueen ? 1.5 : 1
+
+  ctx.save()
+  ctx.translate(Math.floor(x), Math.floor(y))
+  ctx.scale(scale, scale)
+
+  // 根据方向旋转 - 蚂蚁默认朝右
+  // direction: 0=上, 1=右, 2=下, 3=左
+  if (direction === 0) ctx.rotate(-Math.PI / 2)      // 朝上：逆时针90度
+  else if (direction === 2) ctx.rotate(Math.PI / 2)   // 朝下：顺时针90度
+  else if (direction === 3) ctx.scale(-1, 1)          // 朝左：水平翻转
+  // direction === 1 朝右：不做任何变换
+
+  // === 横向蚂蚁绘制（头在左，腹部在右）===
+  
+  // 触角（从头部伸出）
+  ctx.fillStyle = c.head
+  ctx.fillRect(-s * 5, -s * 3, s, s * 2)
+  ctx.fillRect(-s * 5, s * 1, s, s * 2)
+  ctx.fillRect(-s * 6, -s * 4, s, s)
+  ctx.fillRect(-s * 6, s * 3, s, s)
+
+  // 头部（圆形像素）
+  ctx.fillStyle = c.head
+  ctx.fillRect(-s * 4, -s * 2, s * 3, s * 4)
+  ctx.fillRect(-s * 3, -s * 3, s * 2, s * 6)
+  // 眼睛
+  ctx.fillStyle = '#fff'
+  ctx.fillRect(-s * 4, -s * 1, s, s)
+  ctx.fillRect(-s * 4, s * 1, s, s)
+  ctx.fillStyle = '#000'
+  ctx.fillRect(-s * 4, -s * 1, 1, 1)
+  ctx.fillRect(-s * 4, s * 1, 1, 1)
+  // 大颚
+  ctx.fillStyle = c.head
+  ctx.fillRect(-s * 5, -s, s, s)
+  ctx.fillRect(-s * 5, 0, s, s)
+
+  // 胸部（连接头腹）
+  ctx.fillStyle = c.body
+  ctx.fillRect(-s * 1, -s * 1.5, s * 3, s * 3)
+
+  // 腰部（细连接）
+  ctx.fillStyle = c.body
+  ctx.fillRect(s * 2, -s, s * 1.5, s * 2)
+
+  // 腹部（大的椭圆）
+  ctx.fillStyle = c.body
+  if (isQueen) {
+    // 蚁后腹部更大
+    ctx.fillRect(s * 3, -s * 3, s * 6, s * 6)
+    ctx.fillRect(s * 4, -s * 4, s * 4, s * 8)
+    // 腹部花纹
+    ctx.fillStyle = c.accent
+    ctx.fillRect(s * 5, -s * 2, s * 2, s * 4)
+    ctx.fillRect(s * 4, -s, s, s * 2)
+  } else {
+    ctx.fillRect(s * 3, -s * 2, s * 4, s * 4)
+    ctx.fillRect(s * 4, -s * 2.5, s * 2, s * 5)
+    // 腹部花纹
+    ctx.fillStyle = c.accent
+    ctx.fillRect(s * 4, -s, s * 2, s * 2)
+  }
+
+  // 腿（3对，上下各3条）
+  ctx.fillStyle = c.legs
+  const lOff = legAnim * s
+  // 下方腿
+  ctx.fillRect(-s * 1, s * 2 + lOff, s, s * 2)
+  ctx.fillRect(s * 1, s * 2 - lOff, s, s * 2)
+  ctx.fillRect(s * 3, s * 2 + lOff, s, s * 2)
+  // 上方腿
+  ctx.fillRect(-s * 1, -s * 3 - lOff, s, s * 2)
+  ctx.fillRect(s * 1, -s * 3 + lOff, s, s * 2)
+  ctx.fillRect(s * 3, -s * 3 - lOff, s, s * 2)
+
+  // 搬运食物（在头部前方）
+  if (carrying) {
+    ctx.fillStyle = '#8B4513'
+    ctx.fillRect(-s * 7, -s * 2, s * 2, s * 3)
+    ctx.fillStyle = '#A0522D'
+    ctx.fillRect(-s * 7, -s * 2, s * 2, s)
+  }
+
+  ctx.restore()
+}
+
+// 绘制卵
+function drawEgg(ctx: CanvasRenderingContext2D, x: number, y: number, hatchTimer: number) {
+  const progress = 1 - hatchTimer / EGG_HATCH_TIME
+  const s = 2
+  
+  // 卵的形状（椭圆形）
+  ctx.fillStyle = progress < 0.7 ? '#FFFACD' : '#FFE4B5'
+  ctx.fillRect(x - s * 2, y - s, s * 4, s * 2)
+  ctx.fillRect(x - s, y - s * 2, s * 2, s * 4)
+  
+  // 孵化进度指示
+  if (progress > 0.5) {
+    ctx.fillStyle = '#DEB887'
+    ctx.fillRect(x - s, y - s, s * 2, s * 2)
+  }
+  if (progress > 0.8) {
+    // 快要孵化时出现裂纹
+    ctx.fillStyle = '#8B4513'
+    ctx.fillRect(x, y - s * 2, 1, s)
+    ctx.fillRect(x - s, y, 1, s)
+  }
+}
+
 // ============ 主组件 ============
 function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const gameRef = useRef<GameState>({
     ants: [],
+    eggs: [],
     foods: [],
     particles: [],
-    foodStored: 20,
+    foodStored: 10,
+    foodForQueen: 0,
     totalAnts: 0,
     day: 1,
     nestLevel: 1,
     selectedTool: 'food_seed',
-    message: '欢迎来到蚂蚁世界！点击地面放置食物来喂养蚂蚁吧~',
+    message: '🐜 欢迎来到蚂蚁世界！放置食物喂养你的蚁群吧~',
     messageTimer: 300,
+    queenHunger: 50,
+    nextAntId: 1,
   })
   const animFrameRef = useRef<number>(0)
   const tickRef = useRef<number>(0)
@@ -115,15 +263,19 @@ function App() {
   const initGame = useCallback(() => {
     const game = gameRef.current
     game.ants = []
+    game.eggs = []
     game.foods = []
     game.particles = []
-    game.foodStored = 20
+    game.foodStored = 10
+    game.foodForQueen = 0
     game.day = 1
     game.nestLevel = 1
-    game.message = '欢迎来到蚂蚁世界！点击地面放置食物来喂养蚂蚁吧~'
+    game.message = '🐜 欢迎来到蚂蚁世界！放置食物喂养你的蚁群吧~'
     game.messageTimer = 300
+    game.queenHunger = 50
+    game.nextAntId = 1
 
-    // 创建蚁后
+    // 创建蚁后（固定在巢中心，不会移动）
     game.ants.push({
       id: 0,
       x: NEST_CENTER_X * TILE_SIZE,
@@ -134,17 +286,19 @@ function App() {
       type: 'queen',
       energy: 100,
       age: 0,
-      direction: 0,
+      maxAge: Infinity, // 蚁后永生
+      direction: 1, // 朝右
       frame: 0,
       carryingFood: false,
-      speed: 0.3,
+      speed: 0,
     })
 
     // 创建初始工蚁
-    for (let i = 1; i <= 8; i++) {
-      const angle = (Math.PI * 2 * i) / 8
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI * 2 * i) / 6
+      const id = game.nextAntId++
       game.ants.push({
-        id: i,
+        id,
         x: NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * 30,
         y: NEST_CENTER_Y * TILE_SIZE + Math.sin(angle) * 30,
         targetX: NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * 60,
@@ -153,18 +307,20 @@ function App() {
         type: 'worker',
         energy: 80,
         age: 0,
-        direction: Math.floor(Math.random() * 4),
-        frame: 0,
+        maxAge: WORKER_MAX_AGE + Math.floor(Math.random() * 1200),
+        direction: 1,
+        frame: Math.floor(Math.random() * 30),
         carryingFood: false,
         speed: 0.8 + Math.random() * 0.4,
       })
     }
 
     // 创建初始兵蚁
-    for (let i = 9; i <= 10; i++) {
-      const angle = (Math.PI * 2 * i) / 4
+    for (let i = 0; i < 2; i++) {
+      const angle = (Math.PI * 2 * i) / 2
+      const id = game.nextAntId++
       game.ants.push({
-        id: i,
+        id,
         x: NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * 20,
         y: NEST_CENTER_Y * TILE_SIZE + Math.sin(angle) * 20,
         targetX: NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * 50,
@@ -173,8 +329,9 @@ function App() {
         type: 'soldier',
         energy: 100,
         age: 0,
-        direction: Math.floor(Math.random() * 4),
-        frame: 0,
+        maxAge: SOLDIER_MAX_AGE + Math.floor(Math.random() * 1200),
+        direction: 1,
+        frame: Math.floor(Math.random() * 30),
         carryingFood: false,
         speed: 0.6 + Math.random() * 0.3,
       })
@@ -191,6 +348,43 @@ function App() {
     initGame()
   }, [initGame])
 
+  // 生成新蚂蚁
+  const spawnAnt = useCallback((game: GameState, type: 'worker' | 'soldier', x: number, y: number) => {
+    const id = game.nextAntId++
+    const angle = Math.random() * Math.PI * 2
+    const newAnt: Ant = {
+      id,
+      x: x + Math.cos(angle) * 10,
+      y: y + Math.sin(angle) * 10,
+      targetX: NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * 40,
+      targetY: NEST_CENTER_Y * TILE_SIZE + Math.sin(angle) * 40,
+      state: 'idle',
+      type,
+      energy: 60,
+      age: 0,
+      maxAge: type === 'worker' ? WORKER_MAX_AGE + Math.floor(Math.random() * 1200) : SOLDIER_MAX_AGE + Math.floor(Math.random() * 1200),
+      direction: 1,
+      frame: 0,
+      carryingFood: false,
+      speed: type === 'worker' ? 0.7 + Math.random() * 0.5 : 0.5 + Math.random() * 0.3,
+    }
+    game.ants.push(newAnt)
+    game.totalAnts = game.ants.filter(a => a.state !== 'dead').length
+
+    // 出生粒子效果
+    for (let i = 0; i < 6; i++) {
+      game.particles.push({
+        x: newAnt.x,
+        y: newAnt.y,
+        vx: (Math.random() - 0.5) * 3,
+        vy: (Math.random() - 0.5) * 3,
+        life: 25,
+        maxLife: 25,
+        color: '#FFD700',
+      })
+    }
+  }, [])
+
   // 游戏逻辑更新
   const updateGame = useCallback(() => {
     const game = gameRef.current
@@ -203,67 +397,61 @@ function App() {
     game.particles = game.particles.filter((p) => {
       p.x += p.vx
       p.y += p.vy
-      p.vy += 0.1
+      p.vy += 0.05
       p.life--
       return p.life > 0
     })
 
-    // 天数计算
+    // 天数计算（每1800帧=30秒为一天）
     if (tickRef.current % 1800 === 0) {
       game.day++
-      // 每天消耗食物
-      const consumption = game.ants.length
+      // 每天消耗食物（只有活着的非蚁后蚂蚁消耗）
+      const aliveNonQueen = game.ants.filter(a => a.state !== 'dead' && a.type !== 'queen')
+      const consumption = Math.ceil(aliveNonQueen.length * 0.5)
       game.foodStored = Math.max(0, game.foodStored - consumption)
+      
+      // 蚁后饥饿度增加
+      game.queenHunger = Math.min(100, game.queenHunger + 5)
+      
       if (game.foodStored <= 0) {
-        game.message = '⚠️ 食物不足！蚂蚁们要饿了！'
+        game.message = '⚠️ 食物不足！快放置食物喂养蚁群！'
         game.messageTimer = 200
       }
     }
 
-    // 蚁后繁殖
-    const queen = game.ants.find((a) => a.type === 'queen')
-    if (queen && game.foodStored >= 10 && tickRef.current % 600 === 0) {
-      game.foodStored -= 5
-      const newType = Math.random() < 0.2 ? 'soldier' : 'worker'
-      const angle = Math.random() * Math.PI * 2
-      const newAnt: Ant = {
-        id: game.ants.length,
-        x: queen.x + Math.cos(angle) * 10,
-        y: queen.y + Math.sin(angle) * 10,
-        targetX: NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * 40,
-        targetY: NEST_CENTER_Y * TILE_SIZE + Math.sin(angle) * 40,
-        state: 'idle',
-        type: newType,
-        energy: 60,
-        age: 0,
-        direction: Math.floor(Math.random() * 4),
-        frame: 0,
-        carryingFood: false,
-        speed: 0.7 + Math.random() * 0.5,
+    // 卵孵化
+    game.eggs = game.eggs.filter(egg => {
+      egg.hatchTimer--
+      if (egg.hatchTimer <= 0) {
+        // 孵化！
+        spawnAnt(game, egg.type, egg.x, egg.y)
+        game.message = `🎉 新${egg.type === 'worker' ? '工蚁' : '兵蚁'}孵化了！`
+        game.messageTimer = 120
+        return false
       }
-      game.ants.push(newAnt)
-      game.totalAnts = game.ants.length
+      return true
+    })
 
-      // 繁殖粒子效果
-      for (let i = 0; i < 8; i++) {
-        game.particles.push({
-          x: queen.x,
-          y: queen.y,
-          vx: (Math.random() - 0.5) * 3,
-          vy: (Math.random() - 0.5) * 3,
-          life: 30,
-          color: '#FFD700',
-        })
-      }
+    // 蚁后产卵逻辑
+    const queen = game.ants.find(a => a.type === 'queen' && a.state !== 'dead')
+    if (queen) {
+      // 蚁后固定在巢中心不动
+      queen.x = NEST_CENTER_X * TILE_SIZE
+      queen.y = NEST_CENTER_Y * TILE_SIZE
+      queen.targetX = queen.x
+      queen.targetY = queen.y
+      queen.frame++
+      queen.age++
 
-      if (game.totalAnts % 5 === 0) {
-        game.message = `🎉 新蚂蚁诞生了！当前蚂蚁数量: ${game.totalAnts}`
-        game.messageTimer = 150
+      // 蚁后饥饿度自然增加
+      if (tickRef.current % 300 === 0) {
+        game.queenHunger = Math.min(100, game.queenHunger + 2)
       }
     }
 
     // 升级蚁巢
-    if (game.totalAnts >= game.nestLevel * 10 + 5 && game.foodStored >= game.nestLevel * 20) {
+    const aliveCount = game.ants.filter(a => a.state !== 'dead').length
+    if (aliveCount >= game.nestLevel * 8 + 5 && game.foodStored >= game.nestLevel * 15) {
       game.nestLevel++
       game.message = `🏰 蚁巢升级到 ${game.nestLevel} 级！`
       game.messageTimer = 200
@@ -271,21 +459,53 @@ function App() {
 
     // 更新蚂蚁AI
     game.ants.forEach((ant) => {
+      if (ant.state === 'dead') return
+      
       ant.frame++
       ant.age++
 
+      // 寿命检查（蚁后不会死）
+      if (ant.type !== 'queen' && ant.age >= ant.maxAge) {
+        ant.state = 'dead'
+        game.totalAnts = game.ants.filter(a => a.state !== 'dead').length
+        // 死亡粒子
+        for (let i = 0; i < 4; i++) {
+          game.particles.push({
+            x: ant.x,
+            y: ant.y,
+            vx: (Math.random() - 0.5) * 2,
+            vy: -Math.random() * 2,
+            life: 20,
+            maxLife: 20,
+            color: '#666',
+          })
+        }
+        return
+      }
+
+      // 蚁后不移动
+      if (ant.type === 'queen') return
+
       // 能量消耗
-      if (tickRef.current % 120 === 0) {
+      if (tickRef.current % 180 === 0) {
         ant.energy = Math.max(0, ant.energy - 1)
-        if (ant.energy <= 0 && ant.type !== 'queen') {
+        if (ant.energy <= 0) {
           ant.state = 'resting'
         }
       }
 
       // 休息恢复
       if (ant.state === 'resting') {
-        ant.energy = Math.min(100, ant.energy + 0.5)
-        if (ant.energy >= 50) ant.state = 'idle'
+        // 在巢附近休息
+        const distToNest = Math.sqrt(
+          (ant.x - NEST_CENTER_X * TILE_SIZE) ** 2 + (ant.y - NEST_CENTER_Y * TILE_SIZE) ** 2
+        )
+        if (distToNest > 30) {
+          ant.targetX = NEST_CENTER_X * TILE_SIZE + (Math.random() - 0.5) * 20
+          ant.targetY = NEST_CENTER_Y * TILE_SIZE + (Math.random() - 0.5) * 20
+        }
+        ant.energy = Math.min(100, ant.energy + 0.8)
+        if (ant.energy >= 60) ant.state = 'idle'
         return
       }
 
@@ -297,41 +517,75 @@ function App() {
       if (dist > 3) {
         ant.x += (dx / dist) * ant.speed
         ant.y += (dy / dist) * ant.speed
-        // 更新方向
+        // 更新方向（横向蚂蚁的方向映射）
         if (Math.abs(dx) > Math.abs(dy)) {
-          ant.direction = dx > 0 ? 1 : 3
+          ant.direction = dx > 0 ? 1 : 3 // 右或左
         } else {
-          ant.direction = dy > 0 ? 2 : 0
+          ant.direction = dy > 0 ? 2 : 0 // 下或上
         }
       } else {
         // 到达目标后选择新行为
-        if (ant.type === 'queen') {
-          // 蚁后在巢内缓慢移动
-          ant.targetX = NEST_CENTER_X * TILE_SIZE + (Math.random() - 0.5) * 30
-          ant.targetY = NEST_CENTER_Y * TILE_SIZE + (Math.random() - 0.5) * 30
-        } else if (ant.state === 'carrying') {
-          // 搬运食物回巢
-          ant.targetX = NEST_CENTER_X * TILE_SIZE + (Math.random() - 0.5) * 20
-          ant.targetY = NEST_CENTER_Y * TILE_SIZE + (Math.random() - 0.5) * 20
-          if (dist < 20) {
-            game.foodStored += 3
+        if (ant.state === 'carrying') {
+          // 搬运食物回巢给蚁后
+          ant.targetX = NEST_CENTER_X * TILE_SIZE + (Math.random() - 0.5) * 15
+          ant.targetY = NEST_CENTER_Y * TILE_SIZE + (Math.random() - 0.5) * 15
+          if (dist < 25) {
+            // 到达巢穴，把食物给蚁后
+            game.foodStored += 1
+            game.foodForQueen += 1
             ant.carryingFood = false
             ant.state = 'idle'
+            
             // 存储食物粒子
-            for (let i = 0; i < 5; i++) {
+            for (let i = 0; i < 4; i++) {
               game.particles.push({
                 x: ant.x,
                 y: ant.y,
                 vx: (Math.random() - 0.5) * 2,
                 vy: -Math.random() * 2,
                 life: 20,
+                maxLife: 20,
                 color: '#90EE90',
               })
+            }
+
+            // 检查蚁后是否可以产卵（每2个食物产1个卵）
+            if (game.foodForQueen >= FOOD_PER_EGG && queen) {
+              game.foodForQueen -= FOOD_PER_EGG
+              game.queenHunger = Math.max(0, game.queenHunger - 20)
+              
+              // 产卵
+              const eggAngle = Math.random() * Math.PI * 2
+              const eggDist = 15 + Math.random() * 10
+              const newEgg: Egg = {
+                id: Date.now() + Math.random(),
+                x: queen.x + Math.cos(eggAngle) * eggDist,
+                y: queen.y + Math.sin(eggAngle) * eggDist,
+                hatchTimer: EGG_HATCH_TIME,
+                type: Math.random() < 0.2 ? 'soldier' : 'worker',
+              }
+              game.eggs.push(newEgg)
+              
+              // 产卵粒子
+              for (let i = 0; i < 8; i++) {
+                game.particles.push({
+                  x: queen.x,
+                  y: queen.y,
+                  vx: (Math.random() - 0.5) * 3,
+                  vy: (Math.random() - 0.5) * 3,
+                  life: 30,
+                  maxLife: 30,
+                  color: '#FFD700',
+                })
+              }
+              
+              game.message = `🥚 蚁后产下了一枚卵！(${FOOD_PER_EGG}食物→1卵)`
+              game.messageTimer = 150
             }
           }
         } else {
           // 工蚁寻找食物
-          if (game.foods.length > 0 && ant.type === 'worker') {
+          if (game.foods.length > 0 && ant.type === 'worker' && !ant.carryingFood) {
             // 找最近的食物
             let closestFood: Food | null = null
             let closestDist = Infinity
@@ -362,10 +616,15 @@ function App() {
                 ant.targetY = NEST_CENTER_Y * TILE_SIZE
               }
             }
+          } else if (ant.type === 'worker' && ant.carryingFood) {
+            // 已经在搬运，目标是巢穴
+            ant.state = 'carrying'
+            ant.targetX = NEST_CENTER_X * TILE_SIZE
+            ant.targetY = NEST_CENTER_Y * TILE_SIZE
           } else {
             // 随机巡逻
             if (Math.random() < 0.02) {
-              const patrolRadius = ant.type === 'soldier' ? NEST_RADIUS + 15 : NEST_RADIUS + 30
+              const patrolRadius = ant.type === 'soldier' ? NEST_RADIUS + 15 : NEST_RADIUS + 35
               const angle = Math.random() * Math.PI * 2
               const r = Math.random() * patrolRadius
               ant.targetX = NEST_CENTER_X * TILE_SIZE + Math.cos(angle) * r * TILE_SIZE
@@ -376,11 +635,14 @@ function App() {
       }
     })
 
+    // 清理死亡蚂蚁（超过一定时间后移除）
+    game.ants = game.ants.filter(a => a.state !== 'dead' || a.age < a.maxAge + 120)
+
     // 每30帧刷新一次React状态
     if (tickRef.current % 30 === 0) {
       forceUpdate((v) => v + 1)
     }
-  }, [])
+  }, [spawnAnt])
 
   // 渲染游戏
   const renderGame = useCallback(() => {
@@ -445,23 +707,40 @@ function App() {
 
     // 蚁巢中心 - 蚁后房间
     ctx.beginPath()
-    ctx.arc(nestScreenX, nestScreenY, 20 + game.nestLevel * 2, 0, Math.PI * 2)
+    ctx.arc(nestScreenX, nestScreenY, 25 + game.nestLevel * 2, 0, Math.PI * 2)
     ctx.fillStyle = '#6b4423'
     ctx.fill()
     ctx.beginPath()
-    ctx.arc(nestScreenX, nestScreenY, 12 + game.nestLevel, 0, Math.PI * 2)
+    ctx.arc(nestScreenX, nestScreenY, 15 + game.nestLevel, 0, Math.PI * 2)
     ctx.fillStyle = '#8B6914'
     ctx.fill()
 
-    // 绘制食物存储指示
-    const storageBars = Math.min(10, Math.floor(game.foodStored / 5))
-    for (let i = 0; i < storageBars; i++) {
-      const angle = (Math.PI * 2 * i) / 10
-      const r = 25 + game.nestLevel * 2
+    // 蚁后饥饿度指示（围绕蚁后的环）
+    const hungerAngle = (game.queenHunger / 100) * Math.PI * 2
+    ctx.beginPath()
+    ctx.arc(nestScreenX, nestScreenY, 20 + game.nestLevel, -Math.PI / 2, -Math.PI / 2 + hungerAngle)
+    ctx.strokeStyle = game.queenHunger > 70 ? '#ff4444' : game.queenHunger > 40 ? '#ffaa00' : '#44ff44'
+    ctx.lineWidth = 3
+    ctx.stroke()
+
+    // 食物储备给蚁后的指示
+    const foodBars = Math.min(10, game.foodForQueen)
+    for (let i = 0; i < foodBars; i++) {
+      const angle = (Math.PI * 2 * i) / 10 - Math.PI / 2
+      const r = 28 + game.nestLevel * 2
       const sx = nestScreenX + Math.cos(angle) * r
       const sy = nestScreenY + Math.sin(angle) * r
       drawPixelRect(ctx, sx - 2, sy - 2, 4, 4, '#90EE90')
     }
+
+    // 绘制卵
+    game.eggs.forEach((egg) => {
+      const ex = egg.x - cam.x
+      const ey = egg.y - cam.y
+      if (ex > -20 && ex < canvas.width + 20 && ey > -20 && ey < canvas.height + 20) {
+        drawEgg(ctx, ex, ey, egg.hatchTimer)
+      }
+    })
 
     // 绘制食物
     game.foods.forEach((food) => {
@@ -476,12 +755,26 @@ function App() {
       }
     })
 
-    // 绘制蚂蚁
+    // 绘制蚂蚁（活的）
     game.ants.forEach((ant) => {
+      if (ant.state === 'dead') return
       const ax = ant.x - cam.x
       const ay = ant.y - cam.y
-      if (ax > -30 && ax < canvas.width + 30 && ay > -30 && ay < canvas.height + 30) {
-        drawPixelPixelAnt(ctx, ax, ay, ant.direction, ant.frame, ant.type, ant.carryingFood)
+      if (ax > -40 && ax < canvas.width + 40 && ay > -40 && ay < canvas.height + 40) {
+        drawPixelAnt(ctx, ax, ay, ant.direction, ant.frame, ant.type, ant.carryingFood)
+        
+        // 寿命指示条（仅非蚁后）
+        if (ant.type !== 'queen') {
+          const lifePercent = 1 - ant.age / ant.maxAge
+          const barWidth = 12
+          const barX = ax - barWidth / 2
+          const barY = ay - (ant.type === 'soldier' ? 16 : 12)
+          // 背景
+          drawPixelRect(ctx, barX, barY, barWidth, 2, '#333')
+          // 寿命条
+          const lifeColor = lifePercent > 0.5 ? '#44ff44' : lifePercent > 0.2 ? '#ffaa00' : '#ff4444'
+          drawPixelRect(ctx, barX, barY, Math.floor(barWidth * lifePercent), 2, lifeColor)
+        }
       }
     })
 
@@ -489,12 +782,12 @@ function App() {
     game.particles.forEach((p) => {
       const px = p.x - cam.x
       const py = p.y - cam.y
-      ctx.globalAlpha = p.life / 30
+      ctx.globalAlpha = p.life / p.maxLife
       drawPixelRect(ctx, px, py, 3, 3, p.color)
     })
     ctx.globalAlpha = 1
 
-    // 绘制网格参考线（淡淡的）
+    // 绘制网格参考线
     ctx.strokeStyle = 'rgba(255,255,255,0.03)'
     ctx.lineWidth = 1
     for (let x = -cam.x % 40; x < canvas.width; x += 40) {
@@ -559,31 +852,31 @@ function App() {
         amount: 8,
         type: 'seed',
       })
-      game.message = '🌱 放置了种子！工蚁会来搬运的'
+      game.message = '🌱 放置了种子！工蚁会来搬运给蚁后'
       game.messageTimer = 100
     } else if (game.selectedTool === 'food_sugar') {
       game.foods.push({
-        id: Date.now(),
+        id: Date.now() + 1,
         x: worldX,
         y: worldY,
         amount: 12,
         type: 'sugar',
       })
-      game.message = '🍬 放置了糖分！蚂蚁们最爱甜食'
+      game.message = '🍬 放置了糖分！蚁后最爱甜食'
       game.messageTimer = 100
     } else if (game.selectedTool === 'food_insect') {
       game.foods.push({
-        id: Date.now(),
+        id: Date.now() + 2,
         x: worldX,
         y: worldY,
         amount: 15,
         type: 'insect',
       })
-      game.message = '🦗 放置了昆虫！高蛋白食物'
+      game.message = '🦗 放置了昆虫！高蛋白促进产卵'
       game.messageTimer = 100
     } else if (game.selectedTool === 'water') {
-      // 浇水恢复能量
       game.ants.forEach((ant) => {
+        if (ant.state === 'dead') return
         const dist = Math.sqrt((ant.x - clickX) ** 2 + (ant.y - clickY) ** 2)
         if (dist < 60) {
           ant.energy = Math.min(100, ant.energy + 30)
@@ -593,6 +886,7 @@ function App() {
             vx: 0,
             vy: -1,
             life: 20,
+            maxLife: 20,
             color: '#87CEEB',
           })
         }
@@ -626,6 +920,9 @@ function App() {
   }
 
   const game = gameRef.current
+  const aliveAnts = game.ants.filter(a => a.state !== 'dead')
+  const workerCount = aliveAnts.filter(a => a.type === 'worker').length
+  const soldierCount = aliveAnts.filter(a => a.type === 'soldier').length
 
   return (
     <div className="w-full h-screen bg-[#1a0f0a] flex flex-col overflow-hidden select-none"
@@ -637,10 +934,14 @@ function App() {
           <span className="text-[#daa520] text-lg font-bold tracking-wider">🐜 蚂蚁饲养员</span>
           <span className="text-[#8B6914] text-sm">第 {game.day} 天</span>
         </div>
-        <div className="flex items-center gap-6 text-sm">
-          <span className="text-[#90EE90]">🍖 食物储备: {game.foodStored}</span>
-          <span className="text-[#FFB6C1]">🐜 蚂蚁数量: {game.totalAnts}</span>
-          <span className="text-[#87CEEB]">🏰 蚁巢等级: {game.nestLevel}</span>
+        <div className="flex items-center gap-4 text-sm flex-wrap">
+          <span className="text-[#90EE90]">🍖 食物: {game.foodStored}</span>
+          <span className="text-[#FFB6C1]">🐜 存活: {aliveAnts.length}</span>
+          <span className="text-[#FFD700]">🥚 卵: {game.eggs.length}</span>
+          <span className="text-[#87CEEB]">🏰 Lv.{game.nestLevel}</span>
+          <span className={game.queenHunger > 70 ? 'text-red-400' : game.queenHunger > 40 ? 'text-yellow-400' : 'text-green-400'}>
+            👑 蚁后饥饿: {Math.floor(game.queenHunger)}%
+          </span>
         </div>
         <button
           onClick={() => setShowHelp(!showHelp)}
@@ -652,15 +953,15 @@ function App() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* 左侧工具栏 */}
-        <div className="w-48 bg-[#2d1b0e] border-r-2 border-[#4a3520] p-3 flex flex-col gap-2">
+        <div className="w-52 bg-[#2d1b0e] border-r-2 border-[#4a3520] p-3 flex flex-col gap-2 overflow-y-auto">
           <div className="text-[#daa520] text-sm font-bold mb-2 border-b border-[#4a3520] pb-1">
             🔧 工具栏
           </div>
           
           {[
-            { tool: 'food_seed' as const, icon: '🌱', name: '种子', desc: '食物+8' },
-            { tool: 'food_sugar' as const, icon: '🍬', name: '糖分', desc: '食物+12' },
-            { tool: 'food_insect' as const, icon: '🦗', name: '昆虫', desc: '食物+15' },
+            { tool: 'food_seed' as const, icon: '🌱', name: '种子', desc: '食物量+8' },
+            { tool: 'food_sugar' as const, icon: '🍬', name: '糖分', desc: '食物量+12' },
+            { tool: 'food_insect' as const, icon: '🦗', name: '昆虫', desc: '食物量+15' },
             { tool: 'water' as const, icon: '💧', name: '浇水', desc: '恢复体力' },
           ].map(({ tool, icon, name, desc }) => (
             <button
@@ -683,18 +984,37 @@ function App() {
             </button>
           ))}
 
-          <div className="mt-4 border-t border-[#4a3520] pt-3">
-            <div className="text-[#daa520] text-xs font-bold mb-2">📊 统计</div>
+          <div className="mt-3 border-t border-[#4a3520] pt-3">
+            <div className="text-[#daa520] text-xs font-bold mb-2">📊 蚁群状态</div>
             <div className="text-[#a08060] text-xs space-y-1">
-              <div>工蚁: {game.ants.filter((a) => a.type === 'worker').length}</div>
-              <div>兵蚁: {game.ants.filter((a) => a.type === 'soldier').length}</div>
-              <div>蚁后: {game.ants.filter((a) => a.type === 'queen').length}</div>
-              <div>搬运中: {game.ants.filter((a) => a.state === 'carrying').length}</div>
-              <div>觅食中: {game.ants.filter((a) => a.state === 'seeking').length}</div>
+              <div>🟤 工蚁: {workerCount}</div>
+              <div>🔴 兵蚁: {soldierCount}</div>
+              <div>👑 蚁后: {aliveAnts.filter(a => a.type === 'queen').length}</div>
+              <div>🥚 卵: {game.eggs.length}</div>
+              <div>🍖 搬运中: {aliveAnts.filter(a => a.state === 'carrying').length}</div>
+              <div>🔍 觅食中: {aliveAnts.filter(a => a.state === 'seeking').length}</div>
             </div>
           </div>
 
-          <div className="mt-auto">
+          <div className="mt-3 border-t border-[#4a3520] pt-3">
+            <div className="text-[#daa520] text-xs font-bold mb-2">👑 蚁后信息</div>
+            <div className="text-[#a08060] text-xs space-y-1">
+              <div>状态: {game.queenHunger > 70 ? '⚠️ 饥饿' : game.queenHunger > 40 ? '😐 一般' : '😊 满足'}</div>
+              <div>喂食进度: {game.foodForQueen}/{FOOD_PER_EGG} → 产卵</div>
+              <div>寿命: ∞ (永生)</div>
+            </div>
+            {/* 蚁后饥饿条 */}
+            <div className="mt-2 h-3 bg-[#1a0f0a] border border-[#4a3520]">
+              <div
+                className={`h-full transition-all ${
+                  game.queenHunger > 70 ? 'bg-red-500' : game.queenHunger > 40 ? 'bg-yellow-500' : 'bg-green-500'
+                }`}
+                style={{ width: `${game.queenHunger}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="mt-auto pt-3">
             <button
               onClick={initGame}
               className="w-full px-3 py-2 bg-[#8b0000] text-white border border-[#a52a2a] hover:bg-[#a52a2a] text-sm font-bold"
@@ -721,7 +1041,7 @@ function App() {
 
           {/* 消息提示 */}
           {game.messageTimer > 0 && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 px-6 py-3 bg-[#2d1b0e]/90 border-2 border-[#daa520] text-[#daa520] text-sm font-bold animate-pulse">
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 px-6 py-3 bg-[#2d1b0e]/90 border-2 border-[#daa520] text-[#daa520] text-sm font-bold animate-pulse whitespace-nowrap">
               {game.message}
             </div>
           )}
@@ -731,17 +1051,27 @@ function App() {
             <div className="absolute inset-4 bg-[#2d1b0e]/95 border-2 border-[#daa520] p-6 overflow-auto">
               <div className="text-[#daa520] text-xl font-bold mb-4">📖 游戏指南</div>
               <div className="text-[#a08060] text-sm space-y-3">
-                <p>🐜 <strong className="text-[#daa520]">目标：</strong>饲养你的蚂蚁 colony，让它们繁荣壮大！</p>
-                <p>🌱 <strong className="text-[#daa520]">喂食：</strong>选择食物工具，点击地图放置食物。工蚁会自动搬运回巢。</p>
-                <p>💧 <strong className="text-[#daa520]">浇水：</strong>点击蚂蚁附近区域，恢复它们的体力。</p>
-                <p>👑 <strong className="text-[#daa520]">繁殖：</strong>食物充足时，蚁后会自动繁殖新蚂蚁。</p>
-                <p>🏰 <strong className="text-[#daa520]">升级：</strong>蚂蚁数量达到条件后，蚁巢自动升级。</p>
-                <p>🖱️ <strong className="text-[#daa520]">操作：</strong>右键/中键拖拽移动视角，左键放置物品。</p>
+                <p>🐜 <strong className="text-[#daa520]">目标：</strong>饲养你的蚂蚁群落，让它们繁荣壮大！</p>
                 <hr className="border-[#4a3520]" />
-                <p>⚔️ <strong className="text-[#daa520]">蚂蚁类型：</strong></p>
-                <p>• 工蚁（棕色）- 负责搬运食物</p>
-                <p>• 兵蚁（红色）- 巡逻保护蚁巢</p>
-                <p>• 蚁后（金色）- 繁殖新蚂蚁</p>
+                <p>🌱 <strong className="text-[#daa520]">喂食流程：</strong></p>
+                <p>1. 点击地图放置食物（种子/糖分/昆虫）</p>
+                <p>2. 工蚁自动找到食物并搬运回巢</p>
+                <p>3. 食物交给蚁后，每 <strong className="text-[#FFD700]">{FOOD_PER_EGG}个食物</strong> 蚁后产 <strong className="text-[#FFD700]">1枚卵</strong></p>
+                <p>4. 卵经过一段时间后孵化为新蚂蚁</p>
+                <hr className="border-[#4a3520]" />
+                <p>👑 <strong className="text-[#daa520]">蚁后：</strong></p>
+                <p>• 固定在巢中心，<strong>无法移动</strong></p>
+                <p>• 接受工蚁送来的食物后产卵</p>
+                <p>• 寿命 <strong className="text-[#FFD700]">无限</strong>（永生）</p>
+                <p>• 注意饥饿度！太高会影响产卵</p>
+                <hr className="border-[#4a3520]" />
+                <p>⏳ <strong className="text-[#daa520]">寿命系统：</strong></p>
+                <p>• 工蚁寿命约 <strong>90秒</strong>（头顶有寿命条）</p>
+                <p>• 兵蚁寿命约 <strong>120秒</strong></p>
+                <p>• 蚁后 <strong className="text-[#FFD700]">永生</strong></p>
+                <p>• 蚂蚁死后会从蚁群中消失</p>
+                <hr className="border-[#4a3520]" />
+                <p>🖱️ <strong className="text-[#daa520]">操作：</strong>左键放置 | 右键拖拽视角</p>
               </div>
               <button
                 onClick={() => setShowHelp(false)}
@@ -756,84 +1086,11 @@ function App() {
 
       {/* 底部信息栏 */}
       <div className="px-4 py-1 bg-[#2d1b0e] border-t-2 border-[#4a3520] flex items-center justify-between text-xs text-[#6b4423]">
-        <span>左键放置 | 右键拖拽视角</span>
-        <span>像素蚂蚁饲养 v1.0 | 用 ❤️ 制作</span>
+        <span>左键放置食物 | 右键拖拽视角 | 工蚁寿命约90秒 | 蚁后永生</span>
+        <span>像素蚂蚁饲养 v2.0 | {FOOD_PER_EGG}食物→1卵</span>
       </div>
     </div>
   )
-}
-
-// 绘制像素蚂蚁的辅助函数
-function drawPixelPixelAnt(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  direction: number,
-  frame: number,
-  type: string,
-  carrying: boolean
-) {
-  const s = 2
-  const colors: Record<string, { body: string; head: string; legs: string; accent: string }> = {
-    worker: { body: '#5c3a1e', head: '#7a4e2a', legs: '#3d2510', accent: '#8B6914' },
-    soldier: { body: '#8b2020', head: '#a53030', legs: '#6b1010', accent: '#ff4444' },
-    queen: { body: '#8b7514', head: '#b8960a', legs: '#6b5510', accent: '#FFD700' },
-  }
-  const c = colors[type] || colors.worker
-  const legAnim = Math.floor(frame / 8) % 2
-
-  ctx.save()
-  ctx.translate(Math.floor(x), Math.floor(y))
-
-  // 根据方向旋转
-  if (direction === 0) ctx.rotate(-Math.PI / 2)
-  else if (direction === 2) ctx.rotate(Math.PI / 2)
-  else if (direction === 3) ctx.scale(-1, 1)
-
-  // 触角
-  ctx.fillStyle = c.head
-  ctx.fillRect(-s * 4, -s * 2, s, s * 2)
-  ctx.fillRect(-s * 4, s, s, s * 2)
-
-  // 头
-  ctx.fillStyle = c.head
-  ctx.fillRect(-s * 3, -s * 2, s * 3, s * 4)
-  // 眼睛
-  ctx.fillStyle = '#fff'
-  ctx.fillRect(-s * 3, -s, s, s)
-  ctx.fillStyle = '#000'
-  ctx.fillRect(-s * 3, -s + 1, 1, 1)
-
-  // 胸部
-  ctx.fillStyle = c.body
-  ctx.fillRect(0, -s * 1.5, s * 3, s * 3)
-
-  // 腹部
-  ctx.fillStyle = c.body
-  ctx.fillRect(s * 3, -s * 2.5, s * 4, s * 5)
-  ctx.fillStyle = c.accent
-  ctx.fillRect(s * 4, -s * 1.5, s * 2, s * 3)
-
-  // 腿
-  ctx.fillStyle = c.legs
-  const lOff = legAnim * s
-  ctx.fillRect(-s, s * 2 + lOff, s, s * 3)
-  ctx.fillRect(s * 1, s * 2 - lOff, s, s * 3)
-  ctx.fillRect(s * 3, s * 2 + lOff, s, s * 3)
-  // 上方腿
-  ctx.fillRect(-s, -s * 3 - lOff, s, s * 2)
-  ctx.fillRect(s * 1, -s * 3 + lOff, s, s * 2)
-  ctx.fillRect(s * 3, -s * 3 - lOff, s, s * 2)
-
-  // 搬运食物
-  if (carrying) {
-    ctx.fillStyle = '#8B4513'
-    ctx.fillRect(-s * 5, -s * 2, s * 2, s * 3)
-    ctx.fillStyle = '#A0522D'
-    ctx.fillRect(-s * 5, -s * 2, s * 2, s)
-  }
-
-  ctx.restore()
 }
 
 export default App
