@@ -111,6 +111,7 @@ const NEST_CENTER_Y = 90
 const NEST_RADIUS = 25
 const WORKER_MAX_AGE = 5400 // 工蚁寿命约90秒（60fps）
 const SOLDIER_MAX_AGE = 7200 // 兵蚁寿命约120秒
+const QUEEN_MAX_AGE = 18000 // 蚁后寿命约300秒（5分钟）
 const EGG_HATCH_TIME = 600 // 卵孵化时间10秒
 const FOOD_PER_EGG = 5 // 5个食物产1个卵
 const CAMERA_SPEED = 8 // 键盘/边缘滚动速度
@@ -524,7 +525,7 @@ function App() {
       type: 'queen',
       energy: 100,
       age: 0,
-      maxAge: Infinity, // 蚁后永生
+      maxAge: QUEEN_MAX_AGE + Math.floor(Math.random() * 3600), // 蚁后寿命约5分钟，有随机浮动
       direction: 1, // 朝右
       frame: 0,
       carryingFood: false,
@@ -1179,7 +1180,7 @@ function App() {
         type: 'queen',
         energy: 100,
         age: 0,
-        maxAge: Infinity,
+        maxAge: QUEEN_MAX_AGE + Math.floor(Math.random() * 3600), // 蚁后寿命约5分钟
         direction: 1,
         frame: 0,
         carryingFood: false,
@@ -1199,21 +1200,48 @@ function App() {
       ant.frame++
       ant.age++
 
-      // 寿命检查（蚁后不会死）
-      if (ant.type !== 'queen' && ant.age >= ant.maxAge) {
+      // 寿命检查
+      if (ant.age >= ant.maxAge) {
         ant.state = 'dead'
         game.totalAnts = game.ants.filter(a => a.state !== 'dead').length
-        // 死亡粒子
-        for (let i = 0; i < 4; i++) {
-          game.particles.push({
-            x: ant.x,
-            y: ant.y,
-            vx: (Math.random() - 0.5) * 2,
-            vy: -Math.random() * 2,
-            life: 20,
-            maxLife: 20,
-            color: '#666',
-          })
+        
+        // 蚁后死亡有特殊效果
+        if (ant.type === 'queen') {
+          // 金色粒子效果
+          for (let i = 0; i < 12; i++) {
+            game.particles.push({
+              x: ant.x,
+              y: ant.y,
+              vx: (Math.random() - 0.5) * 4,
+              vy: (Math.random() - 0.5) * 4,
+              life: 40,
+              maxLife: 40,
+              color: '#FFD700',
+            })
+          }
+          
+          // 检查是否还有其他活着的蚁后
+          const otherQueens = game.ants.filter(a => a.type === 'queen' && a.state !== 'dead' && a.id !== ant.id)
+          if (otherQueens.length === 0) {
+            game.message = '💀 蚁后去世了！蚁群将无法繁殖新蚂蚁！'
+            game.messageTimer = 300
+          } else {
+            game.message = '💀 一只蚁后去世了'
+            game.messageTimer = 150
+          }
+        } else {
+          // 普通蚂蚁死亡粒子
+          for (let i = 0; i < 4; i++) {
+            game.particles.push({
+              x: ant.x,
+              y: ant.y,
+              vx: (Math.random() - 0.5) * 2,
+              vy: -Math.random() * 2,
+              life: 20,
+              maxLife: 20,
+              color: '#666',
+            })
+          }
         }
         return
       }
@@ -1628,16 +1656,18 @@ function App() {
       if (ax > -40 && ax < viewW + 40 && ay > -40 && ay < viewH + 40) {
         drawPixelAnt(ctx, ax, ay, ant.direction, ant.frame, ant.type, ant.carryingFood, ant.hasWings)
         
-        // 寿命指示条（仅非蚁后）
-        if (ant.type !== 'queen') {
+        // 寿命指示条
+        if (ant.maxAge !== Infinity) {
           const lifePercent = 1 - ant.age / ant.maxAge
-          const barWidth = 12
+          const barWidth = ant.type === 'queen' ? 20 : 12
           const barX = ax - barWidth / 2
-          const barY = ay - (ant.type === 'soldier' ? 16 : 12)
+          const barY = ay - (ant.type === 'queen' ? 30 : ant.type === 'soldier' ? 16 : 12)
           // 背景
           drawPixelRect(ctx, barX, barY, barWidth, 2, '#333')
-          // 寿命条
-          const lifeColor = lifePercent > 0.5 ? '#44ff44' : lifePercent > 0.2 ? '#ffaa00' : '#ff4444'
+          // 寿命条（蚁后用金色）
+          const lifeColor = ant.type === 'queen' 
+            ? (lifePercent > 0.5 ? '#FFD700' : lifePercent > 0.2 ? '#FFA500' : '#FF4500')
+            : (lifePercent > 0.5 ? '#44ff44' : lifePercent > 0.2 ? '#ffaa00' : '#ff4444')
           drawPixelRect(ctx, barX, barY, Math.floor(barWidth * lifePercent), 2, lifeColor)
         }
       }
@@ -2119,7 +2149,16 @@ function App() {
               <div>食物储备: {game.foodForQueen}</div>
               <div>工蚁卵: 1食物 | 兵蚁卵: 2食物</div>
               <div>兵蚁解锁: {workerCount}/18工蚁</div>
-              <div>寿命: ∞ (永生)</div>
+              {(() => {
+                const queen = game.ants.find(a => a.type === 'queen' && a.state !== 'dead')
+                if (queen) {
+                  const remainingSeconds = Math.max(0, Math.floor((queen.maxAge - queen.age) / 60))
+                  const minutes = Math.floor(remainingSeconds / 60)
+                  const seconds = remainingSeconds % 60
+                  return <div>寿命: {minutes}分{seconds}秒</div>
+                }
+                return <div className="text-red-400">⚠️ 没有活着的蚁后</div>
+              })()}
             </div>
             {/* 蚁后饥饿条 */}
             <div className="mt-2 h-3 bg-[#1a0f0a] border border-[#4a3520]">
@@ -2304,7 +2343,8 @@ function App() {
                 <p>⏳ <strong className="text-[#daa520]">寿命系统：</strong></p>
                 <p>• 工蚁寿命约 <strong>90秒</strong>（头顶有寿命条）</p>
                 <p>• 兵蚁寿命约 <strong>120秒</strong></p>
-                <p>• 蚁后 <strong className="text-[#FFD700]">永生</strong></p>
+                <p>• 蚁后寿命约 <strong className="text-[#FFD700]">5分钟</strong>（金色寿命条）</p>
+                <p>• 蚁后去世后蚁群将无法繁殖，需要及时补充新蚁后</p>
                 <p>• 蚂蚁死后会从蚁群中消失</p>
                 <hr className="border-[#4a3520]" />
                 <p>🎮 <strong className="text-[#daa520]">视角控制：</strong></p>
